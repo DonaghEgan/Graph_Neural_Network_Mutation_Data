@@ -11,6 +11,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class GINLayer(nn.Module):
+     """
+     Initialize a GIN layer for message passing gene features with a graph structure.
+
+     Args:
+     feats_in (int): Number of input features per gene.
+     eats_out (int): Number of output features per gene after processing.
+     """
+
     def __init__(self, feats_in, feats_out):
         super(GINLayer, self).__init__()
 
@@ -37,49 +45,17 @@ class GINLayer(nn.Module):
         # Apply MLP
         return self.mlp(out)
 
-class gin_omics(nn.Module):
-    def __init__(self, feats_in, feats_out, edge_index, max_tokens):
-        super(gin_omics, self).__init__()
-        """
-        feats_in: Number of gene-level input features
-        feats_out: Number of output features per gene
-        edge_index: (2, num_edges) tensor defining gene-gene interactions
-        max_tokens: Total number of genes
-        """
-        # Build adjacency matrix for gene aggregation
-        adj = torch.zeros((max_tokens, max_tokens), dtype=torch.float)
-        adj[edge_index[0], edge_index[1]] = 1.0
-        adj.fill_diagonal_(1.0) # maintain self loop
-        self.register_buffer('adj', adj)                    
-
-        self.lin_1 = Linear(feats_in, feats_out, bias=False)
-        self.lin_2 = Linear(feats_out, feats_out, bias=False)
-        self.gene_weights = nn.Parameter(torch.randn(max_tokens, feats_in))
-        self.act1 = nn.LeakyReLU()
-        self.act2 = nn.LeakyReLU()
-
-    def forward(self, x):
-        # x: (B, G, F)
-
-        # 1) per-gene, per-feature-type weights of shape (G, F):
-        w = self.gene_weights            
-        w = w.unsqueeze(0)  # (1, G, F)
-            
-        # 2) apply weights to each occurrence:
-        x = x * w  # stays (1, G, F)
-
-        
-        x2 = torch.matmul(x.transpose(1, 2), self.adj)  # dot product
-        x = x + x2.transpose(1, 2)                     
-
-        x = self.lin_1(x)     
-        x = self.act1(x)
-        x = self.lin_2(x)
-        x = self.act2(x)
-        
-        return x
-        
 class Net_omics(torch.nn.Module):
+     """
+     Initialize the GNN model for integrating omics and clinical data.
+
+     Args:
+     features_omics (int): Number of omics features per gene.
+     features_clin (int): Number of clinical features per sample.
+     dim (int): Hidden dimension for GIN layers.
+     max_tokens (int): Number of genes (nodes) in the graph.
+     output (int, optional): Output features from omics branch. Defaults to 2.
+    """
     def __init__(self, features_omics, features_clin, dim, max_tokens, output = 2):
         super(Net_omics, self).__init__()
         self.gin1 = GINLayer(features_omics, dim)
@@ -104,6 +80,16 @@ class Net_omics(torch.nn.Module):
         return x1
 
 class CoxBatchDataset(IterableDataset):
+    """
+    Initialize a dataset for batching survival data with balanced censored/uncensored samples.
+
+    Args:
+    osurv (np.ndarray or torch.Tensor): Survival data, shape [N, 2] (time, event indicator).
+    clin (np.ndarray or torch.Tensor): Clinical features, shape [N, C].
+    omics (np.ndarray or torch.Tensor): Omics features, shape [N, G, F].
+    batch_size (int, optional): Samples per batch. Defaults to 10.
+    shuffle (bool, optional): Whether to shuffle samples. Defaults to True.
+    """
     def __init__(self, osurv, clin, omics, batch_size=10, shuffle=True):
         # Convert to tensors if needed
         self.osurv = osurv if isinstance(osurv, torch.Tensor) else torch.tensor(osurv, dtype=torch.float)

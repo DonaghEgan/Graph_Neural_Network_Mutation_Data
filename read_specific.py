@@ -62,10 +62,10 @@ def read_reactome_new(tokens: Optional[List[str]] = None, folder: str = 'temp/',
              adj_matrix[idx_a, idx_b] = 1
              adj_matrix[idx_b, idx_a] = 1
 
-    # Add self-loops for all genes in gene_list
+    # Add genes in gene_list -> 0s if not in reactome
     for gene in tokens:
         idx = gene_index[gene]
-        adj_matrix[idx, idx] = 1
+        adj_matrix[idx, idx] = 0
     
     return adj_matrix
 
