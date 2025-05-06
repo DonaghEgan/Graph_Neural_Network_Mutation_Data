@@ -96,6 +96,8 @@ osurv_val = osurv_data[val_set]
 
 # Get the graph with the data. 
 adj_matrix = rs.read_reactome_new(tokens = gene_list)
+row_sums = adj_matrix.sum(axis=1).mean()
+print(f"Avg Number of neighbors per gene: {row_sums}")
 
 if adj_matrix is None:
     raise ValueError("Adjacency matrix was not returned correctly.")

@@ -11,15 +11,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class GINLayer(nn.Module):
-     """
-     Initialize a GIN layer for message passing gene features with a graph structure.
-
-     Args:
-     feats_in (int): Number of input features per gene.
-     eats_out (int): Number of output features per gene after processing.
-     """
-
     def __init__(self, feats_in, feats_out):
+        """
+        Initialize a GIN layer for message passing gene features with a graph structure.
+
+        Args:
+        feats_in (int): Number of input features per gene.
+        eats_out (int): Number of output features per gene after processing.
+        """
+ 
         super(GINLayer, self).__init__()
 
         self.mlp = nn.Sequential(
@@ -29,34 +29,41 @@ class GINLayer(nn.Module):
         )
  
         self.eps = nn.Parameter(torch.Tensor([0.0])) # explore gene-specifc eps?
-    
+
     def forward(self, x, adj):
         """
-        x: Node features, shape [B, G, F]
-        adj: Adjacency matrix, shape [G, G] (binary, unweighted)
+        Process gene features through the GIN layer using an adjacency matrix.
+
+        Args:
+            x (torch.Tensor): Node features, shape [B, G, F] (B: batch size, G: genes, F: features).
+            adj (torch.Tensor): Adjacency matrix, shape [G, G] (binary, unweighted).
+
+        Returns:
+            torch.Tensor: Processed features, shape [B, G, feats_out].
         """
-        # Aggregate neighbors (simple sum)
-        adj_expand = adj.expand(x.shape[0],-1,-1) # adj = [B, G, G]
-        agg = adj_expand @ x  # [B, G, F]
-        
-        # Combine with central node features
-        out = (1 + self.eps) * x + agg # x varies by input 
-        
-        # Apply MLP
+        # Expand adjacency matrix to match batch dimension: [G, G] -> [B, G, G]
+        adj_expand = adj.expand(x.shape[0], -1, -1)
+
+        # Aggregate neighbor features via matrix multiplication: [B, G, G] @ [B, G, F] -> [B, G, F]
+        agg = adj_expand @ x
+
+        # Combine central node features with neighbors, scaled by (1 + eps)
+        out = (1 + self.eps) * x + agg
+
+        # Apply MLP to transform combined features
         return self.mlp(out)
 
 class Net_omics(torch.nn.Module):
-     """
-     Initialize the GNN model for integrating omics and clinical data.
-
-     Args:
-     features_omics (int): Number of omics features per gene.
-     features_clin (int): Number of clinical features per sample.
-     dim (int): Hidden dimension for GIN layers.
-     max_tokens (int): Number of genes (nodes) in the graph.
-     output (int, optional): Output features from omics branch. Defaults to 2.
-    """
     def __init__(self, features_omics, features_clin, dim, max_tokens, output = 2):
+        """
+        Initialize the GNN model for integrating omics and clinical data.
+        Args:
+           features_omics (int): Number of omics features per gene.
+           features_clin (int): Number of clinical features per sample.
+           dim (int): Hidden dimension for GIN layers.
+           max_tokens (int): Number of genes (nodes) in the graph.
+           output (int, optional): Output features from omics branch. Defaults to 2.
+        """
         super(Net_omics, self).__init__()
         self.gin1 = GINLayer(features_omics, dim)
         self.gin2 = GINLayer(dim, dim)
@@ -67,7 +74,6 @@ class Net_omics(torch.nn.Module):
         self.tokens = torch.tensor(np.arange(0,max_tokens))
         self.linclin = Linear(features_clin, 1)
         self.lin3 = Linear(output, 5)
-        
     def forward(self, omics, adj, clin):
         # get the weights for the connections through kd.
         x = self.gin1(omics, adj)

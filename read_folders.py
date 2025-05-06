@@ -79,12 +79,11 @@ def process_clinical(file, patient_to_sample):
 
     # Sort the DataFrame by this new ordered categorical column
     df_sorted = df.sort_values('PATIENT_ID')
-
     # Format variables
     df_sorted['OS_MONTHS'] = df_sorted['OS_MONTHS'].astype(float)
     df_sorted['SEX'] = df_sorted['SEX'].map({'Male': 0, 'Female': 1})
     df_sorted['OS_STATUS'] = df_sorted['OS_STATUS'].map({'0:LIVING': 0, '1:DECEASED': 1})
-
+    
     # Add dummies
     dummies = pd.get_dummies(df_sorted[['DRUG_TYPE']], dtype=int)
     df_sorted = pd.concat([df_sorted, dummies], axis=1)
@@ -330,4 +329,3 @@ def read_files(path):
 
     return data_output
 
-#test = read_files("C:/Users/egand/OneDrive/msk/temp/tmb_mskcc_2018/")
