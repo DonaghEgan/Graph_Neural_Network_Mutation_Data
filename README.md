@@ -19,4 +19,4 @@ This repository contains a pipeline for processing genomic and clinical data fro
 - Glob (`glob`) for file handling
 
 Install dependencies using:
-```requirements.txt file and install with venv
+requirements.txt file and install with venv
