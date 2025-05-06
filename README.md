@@ -1,6 +1,6 @@
 # Graph Isomorphism Neural Network
 
-This repository contains a pipeline for processing genomic and clinical data from cancer studies, such as the MSK Immuno 2019 dataset, and training a Graph Neural Network (GNN) model for survival analysis using a Cox proportional hazards loss. The pipeline handles mutation data, structural variants, clinical features, and gene interaction networks to predict patient survival outcomes.
+This repository processes genomic and clinical data from the MSK Immuno 2019 dataset. Using the Reactome database, a gene network is created. This gene network is used to preform message passing using the previously described Graph Isomorphism Network approach (https://arxiv.org/abs/1810.00826). A Cox prorportional hazard loss using patient survival data is used to train the message passing approach. The pipeline handles mutation data, structural variants, clinical features and gene interaction networks to predict patient survival outcomes
 
 ## Features
 - **Data Processing**: Processes mutation, structural variant, and clinical data into structured arrays for model input.

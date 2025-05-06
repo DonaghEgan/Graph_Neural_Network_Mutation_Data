@@ -221,3 +221,6 @@ for epoch in tqdm(range(1, epochs + 1), desc="Training"):
     # if vci == max(ci_val):
     #     torch.save(model.state_dict(), "best_model.pt")
 
+# Call the plotting function after the training loop
+uf.plot_training_metrics(loss_train, loss_val, ci_train, ci_val, epochs)
+

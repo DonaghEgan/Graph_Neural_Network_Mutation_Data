@@ -1,5 +1,6 @@
 from torch_geometric.data import download_url, extract_zip, extract_gz
 from typing import Optional, List
+import matplotlib.pyplot as plt
 
 def explore_structure(d, indent=0):
     spacing = '  ' * indent
@@ -68,3 +69,41 @@ def convert_symbols(gene_list: List[str], database: str = 'https://storage.googl
   
     return converted
 
+# After the training loop, create summary plots
+def plot_training_metrics(loss_train, loss_val, ci_train, ci_val, epochs):
+    """
+    Generate and save plots for training and validation metrics.
+
+    Args:
+        loss_train (list): Training Cox loss per epoch.
+        loss_val (list): Validation Cox loss per epoch.
+        ci_train (list): Training concordance index per epoch.
+        ci_val (list): Validation concordance index per epoch.
+        epochs (int): Number of training epochs.
+    """
+    # Create a range of epochs, including initial evaluation (0)
+    epoch_range = range(0, epochs + 1)
+
+    # Plot 1: Cox Loss
+    plt.figure(figsize=(10, 6))
+    plt.plot(epoch_range, loss_train, label='Training Loss', color='blue', linewidth=2)
+    plt.plot(epoch_range, loss_val, label='Validation Loss', color='orange', linewidth=2)
+    plt.xlabel('Epoch')
+    plt.ylabel('Cox Loss')
+    plt.title('Training and Validation Cox Loss over Epochs')
+    plt.legend()
+    plt.grid(True)
+    plt.savefig('figures/cox_loss_plot.png', dpi=300, bbox_inches='tight')
+    plt.show()
+
+    # Plot 2: Concordance Index
+    plt.figure(figsize=(10, 6))
+    plt.plot(epoch_range, ci_train, label='Training CI', color='blue', linewidth=2)
+    plt.plot(epoch_range, ci_val, label='Validation CI', color='orange', linewidth=2)
+    plt.xlabel('Epoch')
+    plt.ylabel('Concordance Index')
+    plt.title('Training and Validation Concordance Index over Epochs')
+    plt.legend()
+    plt.grid(True)
+    plt.savefig('figures/concordance_index_plot.png', dpi=300, bbox_inches='tight')
+    plt.show()
