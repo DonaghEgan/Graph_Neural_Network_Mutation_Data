@@ -1,4 +1,5 @@
 import read_folders as rf
+import process_data as prc
 import numpy as np
 import utility_functions as uf
 import random
@@ -21,92 +22,130 @@ from torch_geometric.data import Data, Batch
 import sys
 import model as m
 from tqdm import tqdm  # optional, for a nice progress bar
+import gc
 
 # downlaod msk
-path, sources, urls = ds.download_study(name = 'msk_immuno_2019')
+# msk_immuno_2019
+# msk_pan_2017
+path, sources, urls = ds.download_study(name = 'msk_pan_2017')
 
 # give path to process data 
-data_dict = rf.read_files(path[0])
+data_dict = prc.read_files(path[0])
 
-# exctract relevant data
-mut_pos = data_dict['mutations']['mut_pos']      # Shape (1661, 554, 12) -> Needs reshape
-var_type = data_dict['mutations']['var_type']   # Shape (1661, 554, 5, 12)
-aa_sub = data_dict['mutations']['aa_sub']      # Shape (1661, 554, 48, 12) 24 aa (ref and alt)
-ns = data_dict['mutations']['ns']              # Shape (1661, 554, 12) -> Needs reshape
-chrom = data_dict['sv']['chrom']              # Shape (1661, 554, 46, 12)  46 = 23 * 2 (ref and alt chromosome)
-var_class = data_dict['sv']['var_class']       # Shape (1661, 554, 6, 12)
-clinical_data = data_dict['patient_array']
-gene_list = data_dict['gene_list']
+# exctract relevant data -> mutations
+protein_pos = data_dict['mutation']['protein_pos']      
+var_type = data_dict['mutation']['variant_type_np']   
+aa_sub = data_dict['mutation']['amino_acid']      
+chrom_mut = data_dict['mutation']['chromosome_np']              
+var_class_mut = data_dict['mutation']['var_class_np']
+
+# Verify shapes
+print(f"shape mut:{protein_pos.shape}")
+print(f"shape var_class_mut:{var_class_mut.shape}")
+print(f"shape chrom_mut: {chrom_mut.shape}")
+print(f"shape var_type: {var_type.shape}")
+print(f"shape aa {aa_sub.shape}")
+
+#extract relevant information -> SV
+chrom_sv = data_dict['sv']['chromosome']             
+var_class_sv = data_dict['sv']['var_class']       
+region_sites = data_dict['sv']['region_sites']
+connection_type = data_dict['sv']['connection_type']
+sv_length = data_dict['sv']['sv_length']
+
+print(f"chrom sv:{chrom_sv.shape}")
+print(f"shape var_sv:{var_class_sv.shape}")
+print(f"regions: {region_sites.shape}")
+print(f"connection: {connection_type.shape}")
+print(f"sv_length: {sv_length.shape}")
+
+# patient clincal data
 osurv_data = data_dict['os_array']
-
-# Convert Gene List names
-gene_list = uf.convert_symbols(gene_list)
-
+print(np.isnan(osurv_data).sum())
+clinical_data = data_dict['patient']
+print(f"clin shape:{clinical_data.shape}")
+print(clinical_data[1:15])
 # Merge on last two dimensions
-aa_sub_flat = uf.merge_last_two_dims(aa_sub)     # → (1661, 554, 48*12  = 576)
-chrom_flat = uf.merge_last_two_dims(chrom)      # → (1661, 554, 46*12  = 552)
-var_class_flat = uf.merge_last_two_dims(var_class)  # → (1661, 554,  6*12  =  72)
+var_class_mut_flat = uf.merge_last_two_dims(var_class_mut)
+chrom_mut_flat = uf.merge_last_two_dims(chrom_mut)
+aa_sub_flat = uf.merge_last_two_dims(aa_sub)
 var_type_flat = uf.merge_last_two_dims(var_type)
 
-# Create a list of arrays in the desired concatenation order
+# Apply merge_last_two_dims to SV arrays
+chrom_sv_flat = uf.merge_last_two_dims(chrom_sv)
+var_class_sv_flat = uf.merge_last_two_dims(var_class_sv)
+region_sites_flat = uf.merge_last_two_dims(region_sites)
+
+# Create a list of arrays to concatenate in the specified order
 arrays_to_concat = [
-    mut_pos,  # Size 1 along axis 2
-    var_type_flat,    # Size 5 along axis 2
-    aa_sub_flat,      # Size 48 along axis 2
-    ns,       # Size 1 along axis 2
-    chrom_flat,       # Size 46 along axis 2
-    var_class_flat    # Size 6 along axis 2
+    protein_pos,      
+    var_class_mut_flat,  
+    chrom_mut_flat,    
+    var_type_flat,      
+    chrom_sv_flat,
+    aa_sub_flat, 
+    var_class_sv_flat,
+    region_sites_flat,
+    sv_length,
+    connection_type      
 ]
 
 # join omics layers
+uf.log_memory('Before Conact')
 omics = np.concatenate(arrays_to_concat, axis=2)
+uf.log_memory('After Conact')
+
+# Convert to tenors
+omics_tensor = torch.tensor(omics, dtype=torch.float32)
+clin_tensor = torch.tensor(clinical_data, dtype=torch.float32)
+osurv_tensor = torch.tensor(osurv_data, dtype=torch.float32)
+print("First 10 rows:\n", osurv_tensor[:15])
+
+# Free memory by deleting individual arrays
+del arrays_to_concat, protein_pos, var_type_flat, aa_sub_flat, chrom_sv_flat, 
+var_class_mut_flat, omics, clinical_data, osurv_data, chrom_mut_flat
+gc.collect()
 
 # genes with atleast one feature
-genes_to_keep_mask = np.any(omics != 0, axis=(0, 2))
+genes_to_keep_mask = (omics_tensor != 0).any(dim=(0, 2))
 print(len(genes_to_keep_mask))
 
 # We will set a seed and split into training (80%), validation (10%) and testing (10%)
-sample_list = data_dict['sample_list'] # get samples
+sample_index = data_dict['sample_index'] # get samples
+gene_index = data_dict['gene_index']
+
+# Free memory by deleting data_dict
+del data_dict
+gc.collect()
+
+# Create train, validation, and test indices
+uf.log_memory('Before train-test split')
 random.seed(3)
-sample_index = [i for i in range(len(sample_list))]
-random.shuffle(sample_index)
+sample_idx = list(sample_index.values())
+random.shuffle(sample_idx)
 
-# create training, val, and test sets
-ntrain = int(0.8*len(sample_list))
-nval = int(0.1*len(sample_list))
+ntrain = int(0.8 * len(sample_index))
+nval = int(0.1 * len(sample_index))
+train_idx = sample_idx[:ntrain]
 
-train_set = sample_index[0:ntrain]
-val_set = sample_index[ntrain:(ntrain+nval)]
-test_set = sample_index[(ntrain+nval):]
+val_idx = sample_idx[ntrain:ntrain + nval]
+test_idx = sample_idx[ntrain + nval:]
+uf.log_memory('After train-test split')
 
-# omics -> split
-omics_train = omics[train_set]
-omics_test = omics[test_set]
-omics_val = omics[val_set]
-
-# clinical -> split
-clin_train = clinical_data[train_set] 
-clin_test = clinical_data[test_set]
-clin_val = clinical_data[val_set]
-
-# surv -> split
-osurv_train = osurv_data[train_set]
-osurv_test = osurv_data[test_set]
-osurv_val = osurv_data[val_set]
-
-# Get the graph with the data. 
-adj_matrix = rs.read_reactome_new(tokens = gene_list)
+# Get the graph with the data.
+uf.log_memory('Before Create Adj Matrix') 
+adj_matrix = rs.read_reactome_new(tokens = list(gene_index.keys()))
 row_sums = adj_matrix.sum(axis=1).mean()
 print(f"Avg Number of neighbors per gene: {row_sums}")
+uf.log_memory('After Create Adj Matrix')
 
 if adj_matrix is None:
     raise ValueError("Adjacency matrix was not returned correctly.")
 
-tokens = torch.tensor(np.arange(0,len(gene_list)), dtype = torch.long)
-
 # Load model and set device
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model = m.Net_omics(features_omics=omics_train.shape[2], features_clin=clin_train.shape[-1], dim=50, max_tokens=len(gene_list), output=2).to(device)
+model = m.Net_omics(features_omics=omics_tensor.shape[2], features_clin=clin_tensor.shape[-1], dim=50, max_tokens=len(gene_index), output=2).to(device)
+
 # Send model and adj matrix to device
 model = model.to(device)
 adj_matrix = adj_matrix.to(device)
@@ -172,10 +211,11 @@ def evaluate_model(model, data):
 
     return loss_all / num_batches, c_index / num_batches
 
-# get train and validation 
-train_data = m.CoxBatchDataset(osurv_train, clin_train, omics_train, batch_size=10, shuffle=True)
+# get train and validation
+uf.log_memory('Create batch data') 
+train_data = m.CoxBatchDataset(osurv_tensor, clin_tensor, omics_tensor, batch_size=15, indices = train_idx, shuffle=True)
 print("train batch complete")
-val_data = m.CoxBatchDataset(osurv_val, clin_val, omics_val, batch_size=10, shuffle=True)
+val_data = m.CoxBatchDataset(osurv_tensor, clin_tensor, omics_tensor, batch_size=15, indices = val_idx, shuffle=True)
 
 ######################
 # Training Process

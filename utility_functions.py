@@ -1,6 +1,9 @@
 from torch_geometric.data import download_url, extract_zip, extract_gz
 from typing import Optional, List
 import matplotlib.pyplot as plt
+import psutil
+import os
+import torch
 
 def explore_structure(d, indent=0):
     spacing = '  ' * indent
@@ -107,3 +110,14 @@ def plot_training_metrics(loss_train, loss_val, ci_train, ci_val, epochs):
     plt.grid(True)
     plt.savefig('figures/concordance_index_plot.png', dpi=300, bbox_inches='tight')
     plt.show()
+
+def log_memory(step):
+    process = psutil.Process(os.getpid())
+    cpu_mem_mb = process.memory_info().rss / (1024 ** 2)
+    gpu_info = ""
+    if torch.cuda.is_available():
+        gpu_mem_mb = torch.cuda.memory_allocated() / (1024 ** 2)
+        gpu_info = f", GPU Memory: {gpu_mem_mb:.2f} MB"
+    print(f"{step}: CPU Memory: {cpu_mem_mb:.2f} MB{gpu_info}")
+
+

@@ -61,12 +61,7 @@ def read_reactome_new(tokens: Optional[List[str]] = None, folder: str = 'temp/',
              idx_b = gene_index[gene_b]
              adj_matrix[idx_a, idx_b] = 1
              adj_matrix[idx_b, idx_a] = 1
-
-    # Add genes in gene_list -> 0s if not in reactome
-    for gene in tokens:
-        idx = gene_index[gene]
-        adj_matrix[idx, idx] = 0
-    
+   
     return adj_matrix
 
 def read_cn_depmap(genelist = None, depmaps = None, folder='temp/'):

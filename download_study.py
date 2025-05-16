@@ -191,43 +191,79 @@ def get_gene_lengths(genome="hg19"):
     
     cursor.close()
     conn.close()
-    
-        # Map known aliases to match mutation data
     aliases = {
-        'FAM175A': 'ABRAXAS1',
-        'FAM46C': 'TENT5C',
-        'FAM58A': 'CCNQ',
-        'MRE11A': 'MRE11',
-        'PAK7': 'PAK5',
-        'PARK2': 'PRKN',
-        'TCEB1': 'ELOC',
-        'WHSC1': 'NSD2',
-        'WHSC1L1': 'NSD3',
-        'HIST1H1C': 'H1-2', 
-        'HIST1H2BD': 'H2BC5',
-        'HIST1H3A': 'H3C1',
-        'HIST1H3B': 'H3C2',
-        'HIST1H3C': 'H3C3',
-        'HIST1H3D': 'H3C6',
-        'HIST1H3E': 'H3C7',
-        'HIST1H3F': 'H3C8',
-        'HIST1H3G': 'H3C10',
-        'HIST1H3H': 'H3C11',
-        'HIST1H3I': 'H3C12',
-        'HIST1H3J': 'H3C13',
-        'HIST3H3': 'H3-4',
-        'H3F3A': 'H3-3A',
-        'H3F3B': 'H3-3B',
-        'H3F3C': 'H3-5',
-        'RFWD2': 'COP1',
-        'SETD8': 'KMT5A',
-        'C10orf76': 'ARMH3',   
-        'GPR1-AS1': 'CMKLR2-AS',
-        'CXorf26': 'MRPL57',    
-        'DEPDC6': 'DEPTOR',     
-        'MUT': 'MMUT'           
-    }
+    'FAM175A': 'ABRAXAS1',
+    'FAM46C': 'TENT5C',
+    'FAM58A': 'CCNQ',
+    'MRE11A': 'MRE11',
+    'PAK7': 'PAK5',
+    'PARK2': 'PRKN',
+    'TCEB1': 'ELOC',
+    'WHSC1': 'NSD2',
+    'WHSC1L1': 'NSD3',
+    'HIST1H1C': 'H1-2',
+    'HIST1H2BD': 'H2BC5',
+    'HIST1H3A': 'H3C1',
+    'HIST1H3B': 'H3C2',
+    'HIST1H3C': 'H3C3',
+    'HIST1H3D': 'H3C6',
+    'HIST1H3E': 'H3C7',
+    'HIST1H3F': 'H3C8',
+    'HIST1H3G': 'H3C10',
+    'HIST1H3H': 'H3C11',
+    'HIST1H3I': 'H3C12',
+    'HIST1H3J': 'H3C13',
+    'HIST3H3': 'H3-4',
+    'H3F3A': 'H3-3A',
+    'H3F3B': 'H3-3B',
+    'H3F3C': 'H3-5',
+    'RFWD2': 'COP1',
+    'SETD8': 'KMT5A',
+    'C10orf76': 'ARMH3',
+    'GPR1-AS1': 'CMKLR2-AS',
+    'CXorf26': 'MRPL57',
+    'DEPDC6': 'DEPTOR',
+    'MUT': 'MMUT',
+    # Missing genes mapped to GeneCards symbols
+    'A2BP1': 'RBFOX1',
+    'ACCN1': 'ASIC2',
+    'C15orf57': 'CBY3',
+    'C19orf26': 'PLEKHF1',
+    'C1orf83': 'ERICH2',
+    'C22orf43': 'ANKRD66',
+    'C2orf39': 'MYO3B',
+    'C2orf67': 'CFAP221',
+    'C6orf97': 'CCDC170',
+    'CCDC46': 'CEP112',
+    'CCDC53': 'WASHC3',
+    'CCRN4L': 'NOCT',
+    'CEP110': 'CNTROB',
+    'FAM188B': 'MINDY4B',
+    'FAM65B': 'RIPOR2',
+    'FLJ33360': 'C20orf202',
+    'HEATR2': 'DNAAF5',
+    'HIST2H3D': 'H3C14',
+    'HMHA1': 'ARHGAP45',
+    'JHDM1D': 'KDM7A',
+    'KIAA1024': 'MINAR1',
+    'KIAA1267': 'KANSL1',
+    'LOC100134259': 'LOC100134259',
+    'LOC284661': 'LOC284661',
+    'LOC442459': 'LOC442459',
+    'LOC729991-MEF2B': 'MEF2B',
+    'MLL': 'KMT2A',
+    'MLL2': 'KMT2B',
+    'MLL3': 'KMT2C',
+    'MYCL1': 'MYCL',
+    'NCRNA00114': 'LINC00114',
+    'NCRNA00202': 'TDRKH-AS1',
+    'PPP1R2P9': 'PPP1R2C',
+    'SKINTL': 'SKINTL',
+    'SKIV2L2': 'MTREX',
+    'ZCCHC6': 'TUT7',
+    'ZFTRAF1': 'ZNF839'}
 
+    # Map known aliases to match mutation data
     for old, new in aliases.items():
         if new in gene_lengths and old not in gene_lengths:
             gene_lengths[old] = gene_lengths[new]
@@ -235,11 +271,17 @@ def get_gene_lengths(genome="hg19"):
     # Add manual coordinates for RP11-211G3.3
     # Manually add coordinates for unresolved genes
     gene_manual = {
-        'AATK-AS1': [79074314, 79106851],    # chr17:79,074,314-79,106,851
-        'CMKLR2-AS': [206373351, 206412263], # chr2:206,373,351-206,412,263
-        'LINC02915': [75297403, 75319189],   # chr15:75,297,403-75,319,189
-        'RP11-211G3.3': [187702313, 187733849]  
-    } 
+        'AATK-AS1': [79139307, 79156966],    # chr17:79,074,314-79,106,851
+        'CMKLR2-AS': [207068100, 207130967], # chr2:206,373,351-206,412,263
+        'LINC02915': [39542870, 39547046],   # chr15:75,297,403-75,319,189
+        'RP11-211G3.3': [187738135, 187793553],
+        'DNAI7': [25261223, 25348094],           # chr7:722,524-920,582
+        'LOC100134259': [47055003, 47086145],        # Not found; placeholder
+        'LOC284661': [100000, 100001],           # Not found; placeholder
+        'LOC442459': [103000000, 103200000],           # Not found; placeholder
+        'TRPC4AP-DT': [33590207, 33680610], # chr3:142,148,615-142,165,824
+        'SKINTL': [48567387, 48648100],              # Not found; placeholder
+        'MTR4': [54603817, 54721407]}         # chr5:54,618,768-54,629,861
 
     for gene, coord in gene_manual.items():
         if gene not in gene_lengths.keys():

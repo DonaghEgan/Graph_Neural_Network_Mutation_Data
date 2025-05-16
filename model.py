@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 from torch.nn import Linear
 import torch
@@ -6,7 +7,6 @@ from torch.utils.data import DataLoader
 from torch_geometric.data import Data, Batch
 import random
 import numpy as np
-import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -24,6 +24,7 @@ class GINLayer(nn.Module):
 
         self.mlp = nn.Sequential(
             nn.Linear(feats_in, feats_out),
+            nn.BatchNorm1d(feats_out),
             nn.ReLU(),
             nn.Linear(feats_out, feats_out)
         )
@@ -46,12 +47,17 @@ class GINLayer(nn.Module):
 
         # Aggregate neighbor features via matrix multiplication: [B, G, G] @ [B, G, F] -> [B, G, F]
         agg = adj_expand @ x
-
+        
         # Combine central node features with neighbors, scaled by (1 + eps)
         out = (1 + self.eps) * x + agg
+        
+         # Check for numerical instability
+        if torch.isnan(out).any() or torch.isinf(out).any():
+            print("Warning: NaN or inf detected in out")
+            print(f"x max: {x.max()}, agg max: {agg.max()}, eps: {self.eps}")
 
         # Apply MLP to transform combined features
-        return self.mlp(out)
+        return self.mlp(out.view(-1, out.shape[-1])).view(x.shape[0], x.shape[1], -1)
 
 class Net_omics(torch.nn.Module):
     def __init__(self, features_omics, features_clin, dim, max_tokens, output = 2):
@@ -73,14 +79,18 @@ class Net_omics(torch.nn.Module):
         self.features_omics = features_omics
         self.tokens = torch.tensor(np.arange(0,max_tokens))
         self.linclin = Linear(features_clin, 1)
-        self.lin3 = Linear(output, 5)
+        self.lin3 = Linear(output, 1)
     def forward(self, omics, adj, clin):
         # get the weights for the connections through kd.
         x = self.gin1(omics, adj)
+        print(x.shape)
         x = self.gin2(x, adj)
         x = self.gin3(x, adj)
+        print(x.shape)
         x = torch.flatten(x, 1)
+        print(x.shape)
         x = self.linout(x)
+        print(x.shape)
         x2 = self.linclin(clin)
         x1 = self.lin3(x) + x2
         return x1
@@ -96,17 +106,26 @@ class CoxBatchDataset(IterableDataset):
     batch_size (int, optional): Samples per batch. Defaults to 10.
     shuffle (bool, optional): Whether to shuffle samples. Defaults to True.
     """
-    def __init__(self, osurv, clin, omics, batch_size=10, shuffle=True):
+    def __init__(self, osurv, clin, omics, batch_size=10, indices = None, shuffle=True):
         # Convert to tensors if needed
         self.osurv = osurv if isinstance(osurv, torch.Tensor) else torch.tensor(osurv, dtype=torch.float)
         self.clin = clin if isinstance(clin, torch.Tensor) else torch.tensor(clin, dtype=torch.float)
         self.omics = omics if isinstance(omics, torch.Tensor) else torch.tensor(omics, dtype=torch.float)
         
+        # Use all indices if none provided, otherwise use the specified subset
+        if indices is None:
+            self.indices = list(range(self.osurv.shape[0]))
+            print('Indices not provided, using all samples')
+        else:
+            self.indices = list(indices)
+
         if self.osurv.shape[0] < batch_size:
             raise ValueError("Dataset size smaller than batch size")
-        
-        self.deads = torch.where(self.osurv[:, 1] == 1)[0].tolist()
-        self.censored = torch.where(self.osurv[:, 1] == 0)[0].tolist()
+
+        # Identify dead (event=1) and censored (event=0) samples within the provided indices
+        self.deads = [idx for idx in self.indices if self.osurv[idx, 1] == 1]
+        self.censored = [idx for idx in self.indices if self.osurv[idx, 1] == 0]       
+
         if not self.deads:
             raise ValueError("No uncensored events found")
         
@@ -128,21 +147,21 @@ class CoxBatchDataset(IterableDataset):
         while remaining_indices:
             # Identify remaining uncensored and censored samples
             remaining_deads = [i for i in remaining_indices if i in self.deads]
+             # Break if no uncensored samples remain
+            if not remaining_deads: 
+                break
             remaining_censored = [i for i in remaining_indices if i in self.censored]
-            
+    
             # Determine the current batch size
             current_batch_size = min(self.batch_size, len(remaining_indices))
-            # stop when number of samples is less than 5
+            # Stop when number of samples is less than 5
             if current_batch_size < 5:
-                break #      
+                break       
             # Decide how many uncensored samples to include
-            if remaining_deads:
-                ratio = len(remaining_deads) / len(remaining_indices)
-                j_d = np.random.binomial(current_batch_size, ratio)
-                j_d = max(1, min(j_d, len(remaining_deads)))  # At least 1, but not more than available
-            else:
-                j_d = 0  # No uncensored samples left, use only censored
-            
+            ratio = len(remaining_deads) / len(remaining_indices)
+            j_d = np.random.binomial(current_batch_size, ratio)
+            j_d = max(1, min(j_d, len(remaining_deads)))  # At least 1, but not more than availabl
+        
             # Select samples for the batch
             batch_indices = []
             if j_d > 0:
@@ -158,6 +177,8 @@ class CoxBatchDataset(IterableDataset):
                 for idx in selected_censored:
                     remaining_indices.remove(idx)
             
+            assert all(0 <= idx < self.osurv.shape[0] for idx in batch_indices), f"Indices out of bounds: {batch_indices}"
+            
             # Create batch data
             batch_data = [
                 Data(
@@ -166,7 +187,7 @@ class CoxBatchDataset(IterableDataset):
                     omics=self.omics[i].unsqueeze(0)
                 ) for i in batch_indices
             ]
-            
+
             # Yield the batch if it contains samples
             if batch_data:
                 yield Batch.from_data_list(batch_data)

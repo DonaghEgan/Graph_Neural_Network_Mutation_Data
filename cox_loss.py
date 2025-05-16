@@ -35,16 +35,15 @@ def cox_loss_effron(t_d, pred):
     d_ind = d_flat.nonzero().flatten()
     hazard_sum_zeros =  torch.zeros((d_ind.shape), dtype = pred_flat.dtype,device = device)
     # precompute the numerator
-    log_num = pred_flat[d_ind].mean() 
+    log_num = pred_flat[d_ind].mean()
     # calculate the hazard for patients whose t is greater than tu_i
     hazard_gt_mi = torch.logcumsumexp(pred_flat, dim=0)[d_ind] # this is the cummulative sum of hazards
     # number of events for each unique risk set
     tu, m_inverse, m = torch.unique_consecutive(t_flat[d_ind], return_counts=True, return_inverse=True)
     # position of last event (lowest duration) of each unique risk set
     m_indx = m.cumsum(axis=0) - 1
-    # Now we need to get the hazard sums for each m. 
+    # Now we need to get the hazard sums for each m.
     # if we just use the original data we will add up extra terms we don't need.
-
     hazard_gt_mi = hazard_gt_mi[m_indx][m_inverse]  # sample the cummulate sum of hazards we need.
     # logsumexp of ties, duplicated within tie set
     hazard_max = pred_flat[d_ind].scatter_reduce(0, m_indx[m_inverse], pred_flat[d_ind], reduce="amax")[m_indx][m_inverse]
@@ -58,6 +57,12 @@ def cox_loss_effron(t_d, pred):
     hazard_sum += torch.log(event_id_in_tie) - torch.log(m[m_inverse])
     # we can combine it in the log_denominator term. 
     log_denom = log_substract(hazard_gt_mi,hazard_sum).mean()
+    if torch.isnan(log_denom) or torch.isnan(log_num):
+        print("⚠️ NaN detected!")
+        print("log_denom:", log_denom)
+        print("log_num:", log_num)
+        print(t_d, pred)
+        raise ValueError("NaN encountered in Cox loss calculation.")
     # loss is negative log likelihood
     return log_denom - log_num
 
@@ -65,27 +70,51 @@ def log_substract(x, y):
     """log(exp(x) - exp(y))"""
     return x + torch.log1p(-(y - x).exp())
 
-
 def concordance_index(t_d,h):
-    # Harrel's concordance index has the following formula:
-    # ct = sum(i = 1:n)(sum(j = 1:n)(Di)(I(i<tj, tj<tau)I(hi>hj)) / sum(i = 1:n)(sum(j = 1:n)(Di)(I(i<tj, tj<tau))
-    # sort t. 
-    device = t_d.device
-    t = t_d[:, 0]
-    d = t_d[:, 1]
+
+    """
+    Calculate Harrell's concordance index for survival data.
     
-    t_flat = t.flatten()
-    d_flat = d.flatten()
+    Parameters:
+    t_d (torch.Tensor): Tensor containing [sample, os_status, os_months]
+             where os_status is 1 for event (death), 0 for censored
+             and os_months is the survival time
+    h (torch.Tensor): Tensor containing hazard scores for each sample
+             Higher hazard score should mean higher risk (shorter survival)
+    
+    Returns:
+    float: Concordance index (c-index) or NaN if no comparable pairs exist
+    """
+
+    device = t_d.device
+    
+    # Extract time and event status
+    t = t_d[:, 0]  # os_months is in the first column (index 0)
+    d = t_d[:, 1]  # os_status is in the second column (index 1)
     h_flat = h.flatten()
-    # sort input based on times.
-    sort_t, idx_t = t_flat.sort(descending = False)
-    d_flat = d_flat[idx_t]
-    t_flat = t_flat[idx_t]
-    h_flat = h_flat[idx_t]
-    d_ind = d_flat.nonzero().flatten()
-    num = torch.tensor(0.0, dtype = torch.float, device = device)
-    denom = torch.tensor(0.0, dtype = torch.float, device = device)
-    for i in range(d_ind.shape[0]):
-        num += torch.sum(torch.gt(t_flat,t_flat[d_ind[i]]) * torch.gt(h_flat[d_ind[i]], h_flat))
-        denom += torch.sum(torch.gt(t_flat, t_flat[d_ind[i]]))
-    return num/denom
+
+    num = torch.tensor(0.0, device=device)
+    denom = torch.tensor(0.0, device=device)
+    
+    valid_comparison_found = False
+    # For all patients with events (d=1)
+    for i in range(len(t)):
+        if d[i] == 1:  # Only consider pairs where first patient had an event
+            # Find all patients with longer survival times
+            comparable = t > t[i]
+            # Check if there are any comparable patients
+            if not torch.any(comparable):
+                continue
+            
+            # Higher h should mean shorter survival time
+            num += torch.sum(comparable & (h_flat[i] > h_flat))
+            denom += torch.sum(comparable)
+            valid_comparison_found = True
+    
+    # Only return the ratio if we found valid comparisons
+    if valid_comparison_found and denom > 0:
+        return num / denom
+    else:
+        # Handle the case where no valid comparisons were found
+        # Return a default value that makes sense for your application
+        return torch.tensor(0.5, device=device)  # or another sensible default 
