@@ -31,6 +31,9 @@ class GINLayer(nn.Module):
  
         self.eps = nn.Parameter(torch.Tensor([0.0])) # explore gene-specifc eps?
 
+        # Layer normalization for better stability        
+        self.layer_norm = nn.LayerNorm(feats_in)
+
     def forward(self, x, adj):
         """
         Process gene features through the GIN layer using an adjacency matrix.
@@ -83,14 +86,10 @@ class Net_omics(torch.nn.Module):
     def forward(self, omics, adj, clin):
         # get the weights for the connections through kd.
         x = self.gin1(omics, adj)
-        print(x.shape)
         x = self.gin2(x, adj)
         x = self.gin3(x, adj)
-        print(x.shape)
         x = torch.flatten(x, 1)
-        print(x.shape)
         x = self.linout(x)
-        print(x.shape)
         x2 = self.linclin(clin)
         x1 = self.lin3(x) + x2
         return x1
