@@ -1,4 +1,3 @@
-import read_folders as rf
 import process_data as prc
 import numpy as np
 import utility_functions as uf
@@ -38,6 +37,7 @@ var_type = data_dict['mutation']['variant_type_np']
 aa_sub = data_dict['mutation']['amino_acid']      
 chrom_mut = data_dict['mutation']['chromosome_np']              
 var_class_mut = data_dict['mutation']['var_class_np']
+fs_mut = data_dict['mutation']['frameshift']
 
 # Verify shapes
 print(f"shape mut:{protein_pos.shape}")
@@ -45,6 +45,7 @@ print(f"shape var_class_mut:{var_class_mut.shape}")
 print(f"shape chrom_mut: {chrom_mut.shape}")
 print(f"shape var_type: {var_type.shape}")
 print(f"shape aa {aa_sub.shape}")
+print(f"shape fs:{fs_mut.shape}")
 
 #extract relevant information -> SV
 chrom_sv = data_dict['sv']['chromosome']             
@@ -59,12 +60,25 @@ print(f"regions: {region_sites.shape}")
 print(f"connection: {connection_type.shape}")
 print(f"sv_length: {sv_length.shape}")
 
+
+# extract relevant data -> CNA
+cna = data_dict['cna']['cna']
+cna = np.expand_dims(cna, axis=-1)  # Resulting shape: (7702, 1181, 1)
+print(f"shape cna:{cna.shape}")
+
 # patient clincal data
 osurv_data = data_dict['os_array']
 print(np.isnan(osurv_data).sum())
 clinical_data = data_dict['patient']
 print(f"clin shape:{clinical_data.shape}")
-print(clinical_data[1:15])
+
+# sample_data
+sample_meta = data_dict['sample_meta']['metadata']
+sample_embeddings = data_dict['sample_meta']['embeddings']
+
+print(f"sample_meta: {len(sample_meta)}")
+print(f"sample embeddings: {sample_embeddings.shape}")
+
 # Merge on last two dimensions
 var_class_mut_flat = uf.merge_last_two_dims(var_class_mut)
 chrom_mut_flat = uf.merge_last_two_dims(chrom_mut)
@@ -78,7 +92,8 @@ region_sites_flat = uf.merge_last_two_dims(region_sites)
 
 # Create a list of arrays to concatenate in the specified order
 arrays_to_concat = [
-    protein_pos,      
+    protein_pos,
+    fs_mut,      
     var_class_mut_flat,  
     chrom_mut_flat,    
     var_type_flat,      
@@ -87,7 +102,8 @@ arrays_to_concat = [
     var_class_sv_flat,
     region_sites_flat,
     sv_length,
-    connection_type      
+    connection_type,
+    cna      
 ]
 
 # join omics layers
@@ -99,11 +115,11 @@ uf.log_memory('After Conact')
 omics_tensor = torch.tensor(omics, dtype=torch.float32)
 clin_tensor = torch.tensor(clinical_data, dtype=torch.float32)
 osurv_tensor = torch.tensor(osurv_data, dtype=torch.float32)
-print("First 10 rows:\n", osurv_tensor[:15])
+sample_embeddings_tensor = torch.tensor(sample_embeddings, dtype=torch.float32)
 
 # Free memory by deleting individual arrays
 del arrays_to_concat, protein_pos, var_type_flat, aa_sub_flat, chrom_sv_flat, 
-var_class_mut_flat, omics, clinical_data, osurv_data, chrom_mut_flat
+var_class_mut_flat, omics, clinical_data, osurv_data, chrom_mut_flat, fs_mut, sample_embeddings, cna
 gc.collect()
 
 # genes with atleast one feature
@@ -134,7 +150,7 @@ uf.log_memory('After train-test split')
 
 # Get the graph with the data.
 uf.log_memory('Before Create Adj Matrix') 
-adj_matrix = rs.read_reactome_new(tokens = list(gene_index.keys()))
+adj_matrix = rs.read_reactome_new(gene_index = gene_index)
 row_sums = adj_matrix.sum(axis=1).mean()
 print(f"Avg Number of neighbors per gene: {row_sums}")
 uf.log_memory('After Create Adj Matrix')
@@ -142,9 +158,10 @@ uf.log_memory('After Create Adj Matrix')
 if adj_matrix is None:
     raise ValueError("Adjacency matrix was not returned correctly.")
 
+print(sample_embeddings_tensor.shape[0])
 # Load model and set device
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model = m.Net_omics(features_omics=omics_tensor.shape[2], features_clin=clin_tensor.shape[-1], dim=50, max_tokens=len(gene_index), output=2).to(device)
+model = m.Net_omics(features_omics=omics_tensor.shape[2], features_clin=clin_tensor.shape[-1], dim=50, embedding_dim_string = sample_embeddings.shape[1], max_tokens=len(gene_index), output=2).to(device)
 
 # Send model and adj matrix to device
 model = model.to(device)
@@ -166,7 +183,7 @@ def train_block(model, data):
         optimizer.zero_grad()
         
         # run the model
-        pred = model(batch.omics, adj_matrix, batch.clin)
+        pred = model(batch.omics, adj_matrix, batch.clin, batch.sample_meta)
         
         # calculate Cox' partial likelihood and get the autograd output.
         loss = cl.cox_loss_effron(batch.osurv, pred)
@@ -204,7 +221,7 @@ def evaluate_model(model, data):
         for batch in data:
             batch = uf.move_batch_to_device(batch, device=device)
             num_batches += 1
-            pred = model(batch.omics, adj_matrix, batch.clin)
+            pred = model(batch.omics, adj_matrix, batch.clin, batch.sample_meta)
             loss = cl.cox_loss_effron(batch.osurv, pred)
             loss_all += loss.item()
             c_index += cl.concordance_index(batch.osurv, pred)
@@ -213,9 +230,9 @@ def evaluate_model(model, data):
 
 # get train and validation
 uf.log_memory('Create batch data') 
-train_data = m.CoxBatchDataset(osurv_tensor, clin_tensor, omics_tensor, batch_size=15, indices = train_idx, shuffle=True)
+train_data = m.CoxBatchDataset(osurv_tensor, clin_tensor, omics_tensor, sample_embeddings_tensor, batch_size=32, indices = train_idx, shuffle=True)
 print("train batch complete")
-val_data = m.CoxBatchDataset(osurv_tensor, clin_tensor, omics_tensor, batch_size=15, indices = val_idx, shuffle=True)
+val_data = m.CoxBatchDataset(osurv_tensor, clin_tensor, omics_tensor, sample_embeddings_tensor, batch_size=32, indices = val_idx, shuffle=True)
 
 ######################
 # Training Process
@@ -262,5 +279,13 @@ for epoch in tqdm(range(1, epochs + 1), desc="Training"):
     #     torch.save(model.state_dict(), "best_model.pt")
 
 # Call the plotting function after the training loop
+def to_numpy(x):
+    return x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else x
+
+ci_train = to_numpy(ci_train)
+ci_val = to_numpy(ci_val)
+loss_train = to_numpy(loss_train)
+loss_val = to_numpy(loss_val)
+
 uf.plot_training_metrics(loss_train, loss_val, ci_train, ci_val, epochs)
 

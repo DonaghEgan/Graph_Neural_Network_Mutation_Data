@@ -5,12 +5,11 @@ from torch_geometric.data import download_url, extract_zip, extract_gz
 import numpy as np
 from torch_geometric.data import Data
 import csv
-import read_folders
 import download_study
 import zipfile 
-from typing import Optional, List  
+from typing import Optional, List, Dict  
 
-def read_reactome_new(tokens: Optional[List[str]] = None, folder: str = 'temp/', url: str = 'https://reactome.org/download/tools/ReatomeFIs/FIsInGene_122921_with_annotations.txt.zip') -> torch.Tensor:
+def read_reactome_new(gene_index: Dict[str, int], folder: str = 'temp/', url: str = 'https://reactome.org/download/tools/ReatomeFIs/FIsInGene_122921_with_annotations.txt.zip') -> torch.Tensor:
     """
     Function to read Reactome file and extract gene regulatory and protein-protein interaction networks.
 
@@ -43,7 +42,6 @@ def read_reactome_new(tokens: Optional[List[str]] = None, folder: str = 'temp/',
         raise FileNotFoundError("No .txt file found in the folder.")
 
     # Read file and store parsed lines (exlcuding header)
-    gene_index = {gene: i for i, gene in enumerate(tokens)}
     interaction_pairs = []
 
     with open(extracted_path, 'r') as fo:
@@ -54,7 +52,7 @@ def read_reactome_new(tokens: Optional[List[str]] = None, folder: str = 'temp/',
             interaction_pairs.append([parts[0], parts[1]]) 
  
     # Initialize adjacency matrix
-    adj_matrix = torch.zeros((len(tokens), len(tokens)), dtype = torch.float32)
+    adj_matrix = torch.zeros((len(gene_index), len(gene_index)), dtype = torch.float32)
     for gene_a, gene_b in interaction_pairs:
         if gene_a in gene_index and gene_b in gene_index:
              idx_a = gene_index[gene_a]    

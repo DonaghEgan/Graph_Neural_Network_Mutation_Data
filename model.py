@@ -11,6 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class GINLayer(nn.Module):
+    
     def __init__(self, feats_in, feats_out):
         """
         Initialize a GIN layer for message passing gene features with a graph structure.
@@ -30,9 +31,6 @@ class GINLayer(nn.Module):
         )
  
         self.eps = nn.Parameter(torch.Tensor([0.0])) # explore gene-specifc eps?
-
-        # Layer normalization for better stability        
-        self.layer_norm = nn.LayerNorm(feats_in)
 
     def forward(self, x, adj):
         """
@@ -63,7 +61,7 @@ class GINLayer(nn.Module):
         return self.mlp(out.view(-1, out.shape[-1])).view(x.shape[0], x.shape[1], -1)
 
 class Net_omics(torch.nn.Module):
-    def __init__(self, features_omics, features_clin, dim, max_tokens, output = 2):
+    def __init__(self, features_omics, features_clin, dim, embedding_dim_string, max_tokens, output = 2):
         """
         Initialize the GNN model for integrating omics and clinical data.
         Args:
@@ -71,9 +69,12 @@ class Net_omics(torch.nn.Module):
            features_clin (int): Number of clinical features per sample.
            dim (int): Hidden dimension for GIN layers.
            max_tokens (int): Number of genes (nodes) in the graph.
+           embedding_dim_string: the dimension of each samples clinical information (tumor purity, cancer type etc)
            output (int, optional): Output features from omics branch. Defaults to 2.
         """
+
         super(Net_omics, self).__init__()
+        # previosuly defined GIN layer
         self.gin1 = GINLayer(features_omics, dim)
         self.gin2 = GINLayer(dim, dim)
         self.gin3 = GINLayer(dim, 1)
@@ -81,16 +82,19 @@ class Net_omics(torch.nn.Module):
         self.max_tokens = max_tokens
         self.features_omics = features_omics
         self.tokens = torch.tensor(np.arange(0,max_tokens))
-        self.linclin = Linear(features_clin, 1)
+        self.linclin = Linear(features_clin + embedding_dim_string, 1)
         self.lin3 = Linear(output, 1)
-    def forward(self, omics, adj, clin):
+       
+    def forward(self, omics, adj, clin, sample_meta):
         # get the weights for the connections through kd.
         x = self.gin1(omics, adj)
         x = self.gin2(x, adj)
         x = self.gin3(x, adj)
         x = torch.flatten(x, 1)
         x = self.linout(x)
-        x2 = self.linclin(clin)
+        # Clinical + categorical branch
+        combined_clin  = torch.cat([clin, sample_meta], dim = -1)
+        x2 = self.linclin(combined_clin)
         x1 = self.lin3(x) + x2
         return x1
 
@@ -105,11 +109,12 @@ class CoxBatchDataset(IterableDataset):
     batch_size (int, optional): Samples per batch. Defaults to 10.
     shuffle (bool, optional): Whether to shuffle samples. Defaults to True.
     """
-    def __init__(self, osurv, clin, omics, batch_size=10, indices = None, shuffle=True):
+    def __init__(self, osurv, clin, omics, sample_meta, batch_size=10, indices = None, shuffle=True):
         # Convert to tensors if needed
         self.osurv = osurv if isinstance(osurv, torch.Tensor) else torch.tensor(osurv, dtype=torch.float)
         self.clin = clin if isinstance(clin, torch.Tensor) else torch.tensor(clin, dtype=torch.float)
         self.omics = omics if isinstance(omics, torch.Tensor) else torch.tensor(omics, dtype=torch.float)
+        self.sample_meta = sample_meta if isinstance(sample_meta, torch.Tensor) else torch.tensor(sample_meta, dtype=torch.float)
         
         # Use all indices if none provided, otherwise use the specified subset
         if indices is None:
@@ -183,7 +188,8 @@ class CoxBatchDataset(IterableDataset):
                 Data(
                     osurv=self.osurv[i].unsqueeze(0),
                     clin=self.clin[i].unsqueeze(0),
-                    omics=self.omics[i].unsqueeze(0)
+                    omics=self.omics[i].unsqueeze(0),
+                    sample_meta=self.sample_meta[i].unsqueeze(0)
                 ) for i in batch_indices
             ]
 

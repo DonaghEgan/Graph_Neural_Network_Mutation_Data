@@ -11,8 +11,9 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import os
 import statistics
+from sentence_transformers import SentenceTransformer
 
-def unify_files(mut_file: str, sv_file: str, patient_file: str, sample_file: str):    
+def unify_files(mut_file: str, sv_file: str, cna_file: str, patient_file: str, sample_file: str):    
 
     """
     Read through each file. Remove samples with missing data. Create sample index.
@@ -73,6 +74,18 @@ def unify_files(mut_file: str, sv_file: str, patient_file: str, sample_file: str
                     row_sv.append(line)
                     sv_samples.add(line[head_sv['SAMPLE_ID']])
 
+    # CNA file
+    head_cna = None
+    cna_values = {}
+    with open(cna_file, 'r') as cf:
+        for line in cf:
+            line = line.strip().split('\t')
+            if not head_cna and 'Hugo_Symbol' in line:
+                samples = line[1:]  # skip 'Hugo_Symbol' - samples
+                head_cna = {sample:idx for idx, sample in enumerate(samples)}
+            elif head_cna and len(line) == len(head_cna) + 1: 
+                cna_values[line[0]] = line[1:] # a gene and its entries
+
     # Unify samples across mut, sv, and clin using sample file mapping
     mut_sv_union = list(mut_samples.union(sv_samples))  
     # Sample_file 
@@ -86,7 +99,6 @@ def unify_files(mut_file: str, sv_file: str, patient_file: str, sample_file: str
                 # Create header indices
                 head_sample = {val.upper(): idx for idx, val in enumerate(line)}    
             elif head_sample and len(line) == len(head_sample):
-                row_sample.append(line)
                 # Get patient and Sample IDs
                 patient_id = line[head_sample['PATIENT_ID']]
                 sample_id = line[head_sample['SAMPLE_ID']]
@@ -94,6 +106,7 @@ def unify_files(mut_file: str, sv_file: str, patient_file: str, sample_file: str
                     if patient_id not in patient_to_samples:
                         patient_to_samples[patient_id] = []
                     patient_to_samples[patient_id].append(sample_id)
+                    row_sample.append(line)
 
     # Sort samples for each patient for consistency
     for patient_id in patient_to_samples:
@@ -106,19 +119,25 @@ def unify_files(mut_file: str, sv_file: str, patient_file: str, sample_file: str
     data_unified = {
         'clinical': {
             'header': head_pat,
-            'rows': row_pat,
+            'rows': row_pat
         },
         'mutation': {
             'header': head_mut,
-            'rows': row_mut,
+            'rows': row_mut
         },
         'sv': {
             'header': head_sv,
-            'rows': row_sv,
+            'rows': row_sv
+        },
+        'cna': {
+            'header': head_cna,
+            'rows': cna_values
         },
         'sample': {
-            'patient_to_samples': patient_to_samples
-        } }
+            'patient_to_samples': patient_to_samples,
+            'rows': row_sample,
+            'header': head_sample
+        }}
     
     return data_unified
 
@@ -127,7 +146,6 @@ def process_clin(clin_dict: Dict[str, Dict[str, List[str]]]):
     head_pat = clin_dict['clinical']['header']
     row_pat = clin_dict['clinical']['rows']
     sample_dict = clin_dict['sample']['patient_to_samples']
-
     # Create sample index
     sample_index = {}
     pat_index = {}
@@ -199,6 +217,50 @@ def process_clin(clin_dict: Dict[str, Dict[str, List[str]]]):
 
     return os_array, clin_array, sample_index
 
+def process_sample(clin_dict: Dict[str, Dict[str, List[str]]], sample_index : Dict[str, int]):
+
+    template = (
+    "This sample is classified as {SAMPLE_TYPE} and originates from the primary site {PRIMARY_SITE},"
+    "with metastasis to {METASTATIC_SITE}. The tumor has an OncoTree code of {ONCOTREE_CODE},"
+    "which corresponds to {CANCER_TYPE}, more specifically described as {CANCER_TYPE_DETAILED}. "
+    "The tumor purity is measured at {TUMOR_PURITY}%, and the tumor mutational burden (TMB) for non-synonymous mutations is {TMB_NONSYNONYMOUS}.")
+
+    head_sample = clin_dict['sample']['header']
+    row_sample = clin_dict['sample']['rows']
+
+    # Load the Sentence-BERT model
+    model = SentenceTransformer('paraphrase-MiniLM-L6-v2', device = 'cpu')
+    
+    # Get the embedding dimension from the model.
+    embedding_dim = model.get_sentence_embedding_dimension()
+
+    # Initiliaze embedding array.    
+    embeddings = np.zeros((len(sample_index), embedding_dim))
+    metadata = {}
+    for row in row_sample:
+        try:
+            # Map patient values to dictionary for inclusion in template
+            row_dict = {value: row[idx] for value, idx in head_sample.items()}
+            # Create textual representation
+            text = template.format(**row_dict)
+            # Encode
+            embedding = model.encode(text).tolist()
+            # Get sample idx
+            sample_idx = sample_index[row[head_sample['SAMPLE_ID']]]
+            ucec_code = row[head_sample['ONCOTREE_CODE']]
+            tmb = row[head_sample['TMB_NONSYNONYMOUS']]
+            cancer_type = row[head_sample['CANCER_TYPE']]
+            # Update array
+            embeddings[sample_idx] = embedding
+            metadata[sample_idx] = [tmb, ucec_code, cancer_type]
+
+        except IndexError:
+            print(f"Warning Row has fewer columns than expected: {row}")
+        except KeyError as e:
+            print(f"Warning: Missing field {e} in template for row: {row}")
+
+    return {'embeddings': embeddings, 'metadata': metadata}
+   
 def create_gene_list(clin_dict: Dict[str, Dict[str, List[str]]]) -> Dict[str, int]:
 
     head_mut = clin_dict['mutation']['header']
@@ -327,12 +389,14 @@ def process_mutations(clin_dict: Dict[str, Dict[str, List[str]]], sample_index: 
     var_type_index = {var: i for i, var in enumerate(var_type_list)}
     var_class_index = {var_class: i for i, var_class in enumerate(var_class_list)} 
     chromosome_index = {chr_num: i for i, chr_num in enumerate(chromosome_list)}
+
     # Initialize output arrays
     var_type_np = np.zeros((len(sample_index), len(gene_index), len(var_type_list), max_muts))
     aa_sub = np.zeros((len(sample_index), len(gene_index), len(unique_aminos) * 2, max_muts)) # x2 ref and alt
     var_class_np = np.zeros((len(sample_index), len(gene_index), len(var_class_list), max_muts))
     protein_pos = np.zeros((len(sample_index), len(gene_index), max_muts))
     chromosome_np = np.zeros((len(sample_index), len(gene_index), len(chromosome_list), max_muts))
+    frame_shift_np = np.zeros((len(sample_index), len(gene_index), max_muts))
 
     # create sample gene pairs -> handle together
     # grouped data
@@ -369,6 +433,13 @@ def process_mutations(clin_dict: Dict[str, Dict[str, List[str]]], sample_index: 
                 # Assign alt aa
                 aa_sub[i, j, len(unique_aminos) + aa_alt_idx, k] = 1
 
+            fs_val = row[head_mut['HGVSP_SHORT']]
+            if 'fs' in fs_val:
+                fs_numeric =  1
+            elif 'fs' not in fs_val:
+                fs_numeric = 0
+            frame_shift_np[i, j, k] = fs_numeric            
+
             variant = row[head_mut['VARIANT_TYPE']]
             if variant != '':
                 var_idx = var_type_index[variant]
@@ -382,13 +453,10 @@ def process_mutations(clin_dict: Dict[str, Dict[str, List[str]]], sample_index: 
             chr_num = row[head_mut['CHROMOSOME']]
             if chr_num != '':
                 chr_idx = chromosome_index[chr_num]
-                chromosome_np[i, j, chr_idx, k ] = 1
-
-    # Min-max protien positions    
-
+                chromosome_np[i, j, chr_idx, k] = 1
 
     return  {'amino_acid': aa_sub, 'protein_pos': protein_pos, 'variant_type_np': var_type_np, 
-            'var_class_np': var_class_np,'chromosome_np': chromosome_np}
+            'var_class_np': var_class_np,'chromosome_np': chromosome_np, 'frameshift': frame_shift_np}
 
 def process_sv(clin_dict: Dict[str, Dict[str, List[str]]], sample_index: Dict[str, int],
                       gene_index: Dict[str, int]):
@@ -491,6 +559,29 @@ def process_sv(clin_dict: Dict[str, Dict[str, List[str]]], sample_index: Dict[st
     return {'chromosome': chrom, 'var_class': var_class, 'region_sites': region_sites,
             'connection_type': connection_type, 'sv_length': sv_length}
 
+def process_cna(clin_dict: Dict[str, Dict[str, List[str]]], sample_index: Dict[str, int],
+                      gene_index: Dict[str, int]):
+    
+    head_cna = clin_dict['cna']['header']  # dict: sample_id -> column index
+    rows_cna = clin_dict['cna']['rows']    # dict: gene -> list of CNA values
+
+    cna_np = np.zeros((len(sample_index), len(gene_index)))
+
+    for gene, g_idx in gene_index.items():
+        if gene in rows_cna:
+            cna_value_list = rows_cna[gene]
+            for sample, s_idx in sample_index.items():
+                if sample in head_cna:
+                    sample_idx = head_cna[sample]
+                    if sample_idx < len(cna_value_list):
+                        try:
+                            cna_value = float(cna_value_list[sample_idx])
+                        except ValueError:
+                            cna_value = np.nan
+                        cna_np[s_idx, g_idx] = cna_value
+
+    return {'cna': cna_np}
+            
 def read_files(path):
 
     # Store outputs
@@ -501,7 +592,9 @@ def read_files(path):
         "os_array": None,
         "sample_index": None,
         "mutation": None,
-        "sv": None
+        "sv": None,
+        "cna": None,
+        'sample_meta': None
     }
 
     # Find all paths containing "data" in the name
@@ -514,7 +607,8 @@ def read_files(path):
         "data_mutations",
         "data_sv",
         "data_clinical_sample",
-        "data_clinical_patient"
+        "data_clinical_patient",
+        "data_cna"
     ]
 
     # Check if all required files exist
@@ -527,24 +621,28 @@ def read_files(path):
     sv_file = path_dict["data_sv"]
     patient_file = path_dict["data_clinical_patient"]
     sample_file = path_dict["data_clinical_sample"]
-   
+    cna_file = path_dict['data_cna']
+
     # Read in files, store as lists, make consistent, remove samples with missing data
-    data_unified = unify_files(mut_file, sv_file, patient_file, sample_file)
+    data_unified = unify_files(mut_file, sv_file, cna_file, patient_file, sample_file)
     os_array, clin_array, samples_index = process_clin(data_unified)
+    sample_meta = process_sample(data_unified, samples_index)
     gene_index = create_gene_list(data_unified)
     calc_gene_muts(data_unified) # output saved in figures -> exploratory
     mutation_dict = process_mutations(data_unified, samples_index, gene_index)
     sv_dict = process_sv(data_unified, samples_index, gene_index)
+    cna_dict = process_cna(data_unified, samples_index, gene_index)
 
     data_output["sv"] = sv_dict
+    data_output["cna"] = cna_dict
     data_output["mutation"] = mutation_dict
     data_output['gene_index'] = gene_index
     data_output['max_muts'] = 5
     data_output['os_array'] = os_array
     data_output['patient'] = clin_array
     data_output['sample_index'] = samples_index
+    data_output['sample_meta'] = sample_meta
 
     return data_output
 
-#test = read_files("/home/degan/msk/temp/msk_impact_2017")
-    # Store outputs
+test = read_files("/home/degan/msk/temp/msk_impact_2017")

@@ -20,6 +20,7 @@ def move_batch_to_device(batch, device):
     batch.omics = batch.omics.to(device)
     batch.clin = batch.clin.to(device)
     batch.osurv = batch.osurv.to(device)
+    batch.sample_meta = batch.sample_meta.to(device)
     return batch
 
 def merge_last_two_dims(x):
