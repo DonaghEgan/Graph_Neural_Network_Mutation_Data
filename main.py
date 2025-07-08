@@ -278,14 +278,5 @@ for epoch in tqdm(range(1, epochs + 1), desc="Training"):
     # if vci == max(ci_val):
     #     torch.save(model.state_dict(), "best_model.pt")
 
-# Call the plotting function after the training loop
-def to_numpy(x):
-    return x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else x
-
-ci_train = to_numpy(ci_train)
-ci_val = to_numpy(ci_val)
-loss_train = to_numpy(loss_train)
-loss_val = to_numpy(loss_val)
-
 uf.plot_training_metrics(loss_train, loss_val, ci_train, ci_val, epochs)
 

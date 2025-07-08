@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import psutil
 import os
 import torch
+import numpy as np
 
 def explore_structure(d, indent=0):
     spacing = '  ' * indent
@@ -73,19 +74,31 @@ def convert_symbols(gene_list: List[str], database: str = 'https://storage.googl
   
     return converted
 
-# After the training loop, create summary plots
 def plot_training_metrics(loss_train, loss_val, ci_train, ci_val, epochs):
     """
     Generate and save plots for training and validation metrics.
 
     Args:
-        loss_train (list): Training Cox loss per epoch.
-        loss_val (list): Validation Cox loss per epoch.
-        ci_train (list): Training concordance index per epoch.
-        ci_val (list): Validation concordance index per epoch.
+        loss_train (list or tensor): Training Cox loss per epoch.
+        loss_val (list or tensor): Validation Cox loss per epoch.
+        ci_train (list or tensor): Training concordance index per epoch.
+        ci_val (list or tensor): Validation concordance index per epoch.
         epochs (int): Number of training epochs.
     """
-    # Create a range of epochs, including initial evaluation (0)
+
+    def to_numpy(x):
+        if isinstance(x, torch.Tensor):
+            return x.detach().cpu().numpy()
+        elif isinstance(x, (list, tuple)):
+            return np.array([to_numpy(i) for i in x])
+        return np.array(x)
+
+    # Convert all inputs
+    loss_train = to_numpy(loss_train)
+    loss_val = to_numpy(loss_val)
+    ci_train = to_numpy(ci_train)
+    ci_val = to_numpy(ci_val)
+
     epoch_range = range(0, epochs + 1)
 
     # Plot 1: Cox Loss

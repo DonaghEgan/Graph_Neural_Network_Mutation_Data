@@ -12,7 +12,7 @@ import torch.nn.functional as F
 
 class GINLayer(nn.Module):
     
-    def __init__(self, feats_in, feats_out):
+    def __init__(self, feats_in, feats_out, max_tokens):
         """
         Initialize a GIN layer for message passing gene features with a graph structure.
 
@@ -23,6 +23,8 @@ class GINLayer(nn.Module):
  
         super(GINLayer, self).__init__()
 
+        self.max_tokens = max_tokens
+
         self.mlp = nn.Sequential(
             nn.Linear(feats_in, feats_out),
             nn.BatchNorm1d(feats_out),
@@ -30,7 +32,7 @@ class GINLayer(nn.Module):
             nn.Linear(feats_out, feats_out)
         )
  
-        self.eps = nn.Parameter(torch.Tensor([0.0])) # explore gene-specifc eps?
+        self.eps = nn.Parameter(torch.zeros(self.max_tokens)) # explore gene-specifc eps?
 
     def forward(self, x, adj):
         """
@@ -43,14 +45,22 @@ class GINLayer(nn.Module):
         Returns:
             torch.Tensor: Processed features, shape [B, G, feats_out].
         """
+        B, G, F_in = x.shape
+        
         # Expand adjacency matrix to match batch dimension: [G, G] -> [B, G, G]
-        adj_expand = adj.expand(x.shape[0], -1, -1)
+        adj_expand = adj.expand(B, -1, -1)
 
         # Aggregate neighbor features via matrix multiplication: [B, G, G] @ [B, G, F] -> [B, G, F]
         agg = adj_expand @ x
+
+        if G != self.max_tokens:
+            raise ValueError(f"Input number of genes ({G}) does not match "
+                             f"layer's num_genes ({self.max_tokens})")
+        
+        one_plus_eps_reshaped = (1 + self.eps).view(1, self.max_tokens, 1)
         
         # Combine central node features with neighbors, scaled by (1 + eps)
-        out = (1 + self.eps) * x + agg
+        out = one_plus_eps_reshaped * x + agg
         
          # Check for numerical instability
         if torch.isnan(out).any() or torch.isinf(out).any():
@@ -75,13 +85,13 @@ class Net_omics(torch.nn.Module):
 
         super(Net_omics, self).__init__()
         # previosuly defined GIN layer
-        self.gin1 = GINLayer(features_omics, dim)
-        self.gin2 = GINLayer(dim, dim)
-        self.gin3 = GINLayer(dim, 1)
+        self.gin1 = GINLayer(features_omics, dim, max_tokens)
+        self.gin2 = GINLayer(dim, dim, max_tokens)
+        self.gin3 = GINLayer(dim, 1, max_tokens)
         self.linout = Linear(max_tokens, output, bias = False)
         self.max_tokens = max_tokens
         self.features_omics = features_omics
-        self.tokens = torch.tensor(np.arange(0,max_tokens))
+        self.tokens = torch.tensor(np.arange(0, max_tokens))
         self.linclin = Linear(features_clin + embedding_dim_string, 1)
         self.lin3 = Linear(output, 1)
        

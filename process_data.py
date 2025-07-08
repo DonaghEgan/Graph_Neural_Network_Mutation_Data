@@ -223,11 +223,10 @@ def process_sample(clin_dict: Dict[str, Dict[str, List[str]]], sample_index : Di
     "This sample is classified as {SAMPLE_TYPE} and originates from the primary site {PRIMARY_SITE},"
     "with metastasis to {METASTATIC_SITE}. The tumor has an OncoTree code of {ONCOTREE_CODE},"
     "which corresponds to {CANCER_TYPE}, more specifically described as {CANCER_TYPE_DETAILED}. "
-    "The tumor purity is measured at {TUMOR_PURITY}%, and the tumor mutational burden (TMB) for non-synonymous mutations is {TMB_NONSYNONYMOUS}.")
+    "The tumor purity is measured at {TUMOR_PURITY}%")
 
     head_sample = clin_dict['sample']['header']
     row_sample = clin_dict['sample']['rows']
-
     # Load the Sentence-BERT model
     model = SentenceTransformer('paraphrase-MiniLM-L6-v2', device = 'cpu')
     
@@ -235,7 +234,7 @@ def process_sample(clin_dict: Dict[str, Dict[str, List[str]]], sample_index : Di
     embedding_dim = model.get_sentence_embedding_dimension()
 
     # Initiliaze embedding array.    
-    embeddings = np.zeros((len(sample_index), embedding_dim))
+    embeddings = np.zeros((len(sample_index), embedding_dim + 1)) # embedding and tmb
     metadata = {}
     for row in row_sample:
         try:
@@ -243,15 +242,21 @@ def process_sample(clin_dict: Dict[str, Dict[str, List[str]]], sample_index : Di
             row_dict = {value: row[idx] for value, idx in head_sample.items()}
             # Create textual representation
             text = template.format(**row_dict)
+        
             # Encode
             embedding = model.encode(text).tolist()
             # Get sample idx
             sample_idx = sample_index[row[head_sample['SAMPLE_ID']]]
             ucec_code = row[head_sample['ONCOTREE_CODE']]
-            tmb = row[head_sample['TMB_NONSYNONYMOUS']]
+            # Handle TMB conversion
+            try:
+                tmb = float(row[head_sample['TMB_NONSYNONYMOUS']])
+            except (ValueError, TypeError):
+                print(f"Warning: Invalid TMB value for sample {sample_idx}")
+                continue
             cancer_type = row[head_sample['CANCER_TYPE']]
             # Update array
-            embeddings[sample_idx] = embedding
+            embeddings[sample_idx] = np.concatenate([embedding, [tmb]])
             metadata[sample_idx] = [tmb, ucec_code, cancer_type]
 
         except IndexError:
@@ -645,4 +650,4 @@ def read_files(path):
 
     return data_output
 
-test = read_files("/home/degan/msk/temp/msk_impact_2017")
+#test = read_files("/home/degan/msk/temp/msk_impact_2017")
