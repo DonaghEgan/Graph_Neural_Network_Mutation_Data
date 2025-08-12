@@ -1,0 +1,8 @@
+metric,value
+best_val_ci,"tensor(0.6720, device='cuda:0')"
+best_val_loss,2.6175605916976927
+final_test_ci,"tensor(0.6048, device='cuda:0')"
+final_test_loss,2.7449829975763955
+total_epochs,31
+test_ci_best_model,"tensor(0.6450, device='cuda:0')"
+test_loss_best_model,2.7002754708131156

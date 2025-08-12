@@ -26,6 +26,7 @@ import gc
 # downlaod msk
 # msk_immuno_2019
 # msk_pan_2017
+
 path, sources, urls = ds.download_study(name = 'msk_pan_2017')
 
 # give path to process data 
@@ -159,24 +160,54 @@ if adj_matrix is None:
     raise ValueError("Adjacency matrix was not returned correctly.")
 
 print(sample_embeddings_tensor.shape[0])
+
 # Load model and set device
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model = m.Net_omics(features_omics=omics_tensor.shape[2], features_clin=clin_tensor.shape[-1], dim=50, embedding_dim_string = sample_embeddings.shape[1], max_tokens=len(gene_index), output=2).to(device)
+if torch.cuda.is_available():
+    # Check GPU memory usage and select the best GPU
+    gpu_count = torch.cuda.device_count()
+    print(f"Found {gpu_count} GPU(s)")
+    
+    # Check memory usage for each GPU and select the one with most free memory
+    best_gpu = 0
+    max_free_memory = 0
+    
+    for i in range(gpu_count):
+        torch.cuda.set_device(i)
+        free_memory = torch.cuda.get_device_properties(i).total_memory - torch.cuda.memory_allocated(i)
+        print(f"GPU {i} ({torch.cuda.get_device_name(i)}): Free memory = {free_memory / 1024**3:.1f} GB")
+        if free_memory > max_free_memory:
+            max_free_memory = free_memory
+            best_gpu = i
+    
+    device = torch.device(f'cuda:{best_gpu}')
+    print(f"Selected GPU {best_gpu} with {max_free_memory / 1024**3:.1f} GB free memory")
+else:
+    device = torch.device('cpu')
+    print("CUDA not available, using CPU")
+
+model = m.Net_omics(features_omics=omics_tensor.shape[2], features_clin=clin_tensor.shape[-1], dim=50, embedding_dim_string = sample_embeddings_tensor.shape[1], max_tokens=len(gene_index), output=2, dropout=0.3).to(device)
+print(f"Using device: {device}")
 
 # Send model and adj matrix to device
 model = model.to(device)
 adj_matrix = adj_matrix.to(device)
-optimizer = torch.optim.SGD(model.parameters(), lr=1e-2)
 
-# Now we can make a training function!
-def train_block(model, data):
+# Improved optimizer: AdamW with weight decay
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4, betas=(0.9, 0.999))
+
+# Learning rate scheduler
+from torch.optim.lr_scheduler import CosineAnnealingLR
+scheduler = CosineAnnealingLR(optimizer, T_max=50, eta_min=1e-6)
+
+# Now we can make a training function with improved loss!
+def train_block(model, data, use_combined_loss=True, loss_schedule_epoch=0):
     model.train()
     loss_all = 0
     c_index = 0
     j = 0
+    
     for batch in data:
-	
-        batch = uf.move_batch_to_device(batch=batch, device=device) # wrapper for moving batch to gpu
+        batch = uf.move_batch_to_device(batch=batch, device=device)
         j += 1
 
         # set the gradients in the optimizer to zero.
@@ -185,17 +216,39 @@ def train_block(model, data):
         # run the model
         pred = model(batch.omics, adj_matrix, batch.clin, batch.sample_meta)
         
-        # calculate Cox' partial likelihood and get the autograd output.
-        loss = cl.cox_loss_effron(batch.osurv, pred)
-        loss.backward()
+        # Choose loss function based on training strategy
+        if use_combined_loss and loss_schedule_epoch > 10:
+            # Use combined loss after initial warmup
+            cox_loss = cl.combined_loss(batch.osurv, pred, cox_weight=0.8, ranking_weight=0.2)
+        elif loss_schedule_epoch > 5:
+            # Use weighted Cox loss for class imbalance
+            cox_loss = cl.weighted_cox_loss(batch.osurv, pred)
+        else:
+            # Use standard enhanced Cox loss for initial epochs
+            cox_loss = cl.cox_loss_effron(batch.osurv, pred)
         
-        # update the loss_all object
-        loss_all += loss.item()
+        # Adaptive L2 regularization - stronger early in training
+        l2_strength = max(0.005, 0.02 * (1 - loss_schedule_epoch / 100))
+        l2_reg = sum(torch.norm(p, p=2) for p in model.parameters() if p.requires_grad)
+        total_loss = cox_loss + l2_strength * l2_reg
+        
+        # Check for numerical issues
+        if torch.isnan(total_loss) or torch.isinf(total_loss):
+            print(f"⚠️ Invalid loss at batch {j}, skipping...")
+            continue
+        
+        total_loss.backward()
+        
+        # Gradient clipping for stability
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        
+        # update the loss_all object (use Cox loss for monitoring)
+        loss_all += cox_loss.item()
         
         # update parameters in model.
         optimizer.step()
         
-        # calculate concordance index
+        # calculate concordance index with improved function
         c_index += cl.concordance_index(batch.osurv, pred)
 
     return loss_all/j, c_index/j
@@ -238,6 +291,43 @@ val_data = m.CoxBatchDataset(osurv_tensor, clin_tensor, omics_tensor, sample_emb
 # Training Process
 ######################
 
+# Early stopping implementation
+class EarlyStopping:
+    def __init__(self, patience=20, verbose=False, delta=0, path='best_model.pt'):
+        self.patience = patience
+        self.verbose = verbose
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
+        self.val_loss_min = np.inf
+        self.delta = delta
+        self.path = path
+
+    def __call__(self, val_loss, model):
+        score = -val_loss
+        if self.best_score is None:
+            self.best_score = score
+            self.save_checkpoint(val_loss, model)
+        elif score < self.best_score + self.delta:
+            self.counter += 1
+            if self.verbose:
+                print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_score = score
+            self.save_checkpoint(val_loss, model)
+            self.counter = 0
+
+    def save_checkpoint(self, val_loss, model):
+        if self.verbose:
+            print(f'Validation loss decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}). Saving model...')
+        torch.save(model.state_dict(), self.path)
+        self.val_loss_min = val_loss
+
+# Initialize early stopping
+early_stopping = EarlyStopping(patience=25, verbose=True)
+
 # Training parameters
 epochs = 500
 print(f"Number of epochs:{epochs}")
@@ -259,10 +349,10 @@ loss_train.append(float(tloss))
 
 print(f"[Init] Train CI: {tci:.4f}, Loss: {tloss:.4f} | Val CI: {vci:.4f}, Loss: {vloss:.4f}")
 
-# Training loop
+# Training loop with improved loss scheduling
 for epoch in tqdm(range(1, epochs + 1), desc="Training"):
-    # Training step
-    tloss, tci = train_block(model, train_data)
+    # Training step with loss scheduling
+    tloss, tci = train_block(model, train_data, use_combined_loss=True, loss_schedule_epoch=epoch)
     ci_train.append(tci)
     loss_train.append(tloss)
 
@@ -271,12 +361,100 @@ for epoch in tqdm(range(1, epochs + 1), desc="Training"):
     ci_val.append(vci)
     loss_val.append(vloss)
 
+    # Learning rate scheduler step
+    scheduler.step()
+    current_lr = scheduler.get_last_lr()[0]
+
     # Print progress
-    print(f"Epoch {epoch:03d} | Train CI: {tci:.4f}, Loss: {tloss:.4f} | Val CI: {vci:.4f}, Loss: {vloss:.4f}")
+    print(f"Epoch {epoch:03d} | Train CI: {tci:.4f}, Loss: {tloss:.4f} | Val CI: {vci:.4f}, Loss: {vloss:.4f} | LR: {current_lr:.6f}")
 
-    # Optional: save best model
-    # if vci == max(ci_val):
-    #     torch.save(model.state_dict(), "best_model.pt")
+    # Early stopping check
+    early_stopping(vloss, model)
+    if early_stopping.early_stop:
+        print("Early stopping triggered!")
+        break
 
-uf.plot_training_metrics(loss_train, loss_val, ci_train, ci_val, epochs)
+    # Optional: save best model based on C-index instead
+    if vci == max(ci_val):
+        torch.save(model.state_dict(), "best_cindex_model.pt")
+        print(f"New best C-index: {vci:.4f}")
+
+print("Training completed!")
+print(f"Best validation C-index: {max(ci_val):.4f}")
+print(f"Final validation loss: {min(loss_val):.4f}")
+
+# Evaluate on test set with best model
+print("\n" + "="*50)
+print("FINAL TEST SET EVALUATION")
+print("="*50)
+
+# Load best model for test evaluation
+model.load_state_dict(torch.load("best_model.pt"))
+test_data = m.CoxBatchDataset(osurv_tensor, clin_tensor, omics_tensor, sample_embeddings_tensor, batch_size=32, indices=test_idx, shuffle=False)
+
+test_loss, test_ci = evaluate_model(model, test_data)
+print(f"Test C-index: {test_ci:.4f}")
+print(f"Test Loss: {test_loss:.4f}")
+
+# Also evaluate with best C-index model
+try:
+    model.load_state_dict(torch.load("best_cindex_model.pt"))
+    test_loss_ci, test_ci_best = evaluate_model(model, test_data)
+    print(f"Test C-index (best CI model): {test_ci_best:.4f}")
+    print(f"Test Loss (best CI model): {test_loss_ci:.4f}")
+except:
+    print("Best C-index model not found, using early stopping model")
+
+# Save training results to CSV for later plotting
+print("\n" + "="*50)
+print("SAVING TRAINING RESULTS")
+print("="*50)
+
+# Create a DataFrame with training metrics
+import pandas as pd
+
+# Ensure all lists have the same length (in case of early stopping)
+actual_epochs = len(loss_train)
+epoch_numbers = list(range(actual_epochs))
+
+results_df = pd.DataFrame({
+    'epoch': epoch_numbers,
+    'train_loss': loss_train,
+    'val_loss': loss_val,
+    'train_ci': ci_train,
+    'val_ci': ci_val
+})
+
+# Add final test results as metadata
+results_df.attrs['test_ci'] = test_ci
+results_df.attrs['test_loss'] = test_loss
+if 'test_ci_best' in locals():
+    results_df.attrs['test_ci_best'] = test_ci_best
+    results_df.attrs['test_loss_best'] = test_loss_ci
+
+# Save to CSV with timestamp
+from datetime import datetime
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+csv_filename = f"training_results_{timestamp}.csv"
+results_df.to_csv(csv_filename, index=False)
+
+print(f"Training results saved to: {csv_filename}")
+print(f"Columns: {list(results_df.columns)}")
+print(f"Total epochs trained: {actual_epochs}")
+
+# Also save a summary file with key metrics
+summary_data = {
+    'metric': ['best_val_ci', 'best_val_loss', 'final_test_ci', 'final_test_loss', 'total_epochs'],
+    'value': [max(ci_val), min(loss_val), test_ci, test_loss, actual_epochs]
+}
+
+if 'test_ci_best' in locals():
+    summary_data['metric'].extend(['test_ci_best_model', 'test_loss_best_model'])
+    summary_data['value'].extend([test_ci_best, test_loss_ci])
+
+summary_df = pd.DataFrame(summary_data)
+summary_filename = f"training_summary_{timestamp}.csv"
+summary_df.to_csv(summary_filename, index=False)
+
+print(f"Training summary saved to: {summary_filename}")
 

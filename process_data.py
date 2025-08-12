@@ -5,141 +5,204 @@ import pandas as pd
 import re
 import download_study as dd
 import csv
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional, Union, Any
 import math
 import seaborn as sns
 import matplotlib.pyplot as plt
 import os
 import statistics
+import logging
 from sentence_transformers import SentenceTransformer
+import warnings
+from datetime import datetime
 
-def unify_files(mut_file: str, sv_file: str, cna_file: str, patient_file: str, sample_file: str):    
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
+def unify_files(mut_file: str, sv_file: str, cna_file: str, patient_file: str, sample_file: str) -> Dict[str, Any]:    
     """
     Read through each file. Remove samples with missing data. Create sample index.
     Order all rows by sample index. Return consistently ordered files.
+    
+    Args:
+        mut_file: Path to mutation data file
+        sv_file: Path to structural variant data file
+        cna_file: Path to copy number alteration data file
+        patient_file: Path to patient clinical data file
+        sample_file: Path to sample metadata file
+        
+    Returns:
+        Dictionary containing unified data from all files
+        
+    Raises:
+        FileNotFoundError: If any required file is not found
+        ValueError: If file formats are invalid
     """
+    
+    logger.info("Starting file unification process...")
+    
+    # Validate file existence
+    for file_path, file_type in [(mut_file, "mutation"), (sv_file, "SV"), 
+                                (cna_file, "CNA"), (patient_file, "patient"), 
+                                (sample_file, "sample")]:
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"{file_type} file not found: {file_path}")
+    
+    try:
+        # Clinical (patient) file
+        logger.info("Processing patient clinical data...")
+        head_pat = None
+        row_pat = []
+        pat_list = set()
+        
+        with open(patient_file, 'r', encoding='utf-8') as pf:
+            for line in pf:
+                line = line.strip().split('\t')
+                if not head_pat and 'PATIENT_ID' in line:
+                    head_pat = {val.upper(): idx for idx, val in enumerate(line)}
+                elif head_pat and len(line) == len(head_pat):
+                    nan_values = ['', 'NA', 'NaN', 'N/A', 'NULL', 'None', '.']
+                    
+                    # Safely access OS fields with error handling
+                    try:
+                        os_value = line[head_pat['OS_MONTHS']]
+                        os_status = line[head_pat['OS_STATUS']]
+                    except (KeyError, IndexError) as e:
+                        logger.warning(f"Missing OS fields in patient file: {e}")
+                        continue
+                    
+                    # Skip rows with NaN values in OS fields
+                    if (os_value in nan_values or os_status in nan_values or
+                        os_value is None or os_status is None):
+                        continue
+                        
+                    row_pat.append(line)
+                    pat_list.add(line[head_pat['PATIENT_ID']])
 
-    # Clinical (patient) file
-    head_pat = None
-    row_pat = []
-    pat_list = set()
-    with open(patient_file, 'r') as pf: 
-        for line in pf:
-            line = line.strip().split('\t')
-            if not head_pat and 'PATIENT_ID' in line:
-                head_pat = {val.upper(): idx for idx, val in enumerate(line)}
-            elif head_pat and len(line) == len(head_pat):
-                nan_values = ['', 'NA', 'NaN', 'N/A', 'NULL', 'None', '.']
-                os_value = line[head_pat['OS_MONTHS']]
-                os_status = line[head_pat['OS_STATUS']]
-                # Skip rows with NaN values in OS fields
-                if (os_value in nan_values or os_status in nan_values or
-                os_value is None or os_status is None):
-                    continue
-                row_pat.append(line)
-                pat_list.add(line[head_pat['PATIENT_ID']])
+        logger.info(f"Processed {len(row_pat)} patient records")
 
-    # Mut file
-    head_mut = None
-    row_mut = []
-    seen_mut = set()
-    mut_samples = set()
-    with open(mut_file, 'r') as mf:
-        for line in mf:
-            line = line.strip().split('\t')
-            if not head_mut and 'Tumor_Sample_Barcode' in line:
-                head_mut = {val.upper(): idx for idx, val in enumerate(line)}
-            elif head_mut and len(line) == len(head_mut):
-                line_tuple = tuple(line)
-                if line_tuple not in seen_mut:
-                    seen_mut.add(line_tuple)
-                    row_mut.append(line)
-                    mut_samples.add(line[head_mut['TUMOR_SAMPLE_BARCODE']])
+        # Mutation file
+        logger.info("Processing mutation data...")
+        head_mut = None
+        row_mut = []
+        seen_mut = set()
+        mut_samples = set()
+        
+        with open(mut_file, 'r', encoding='utf-8') as mf:
+            for line in mf:
+                line = line.strip().split('\t')
+                if not head_mut and 'Tumor_Sample_Barcode' in line:
+                    head_mut = {val.upper(): idx for idx, val in enumerate(line)}
+                elif head_mut and len(line) == len(head_mut):
+                    line_tuple = tuple(line)
+                    if line_tuple not in seen_mut:
+                        seen_mut.add(line_tuple)
+                        row_mut.append(line)
+                        mut_samples.add(line[head_mut['TUMOR_SAMPLE_BARCODE']])
 
-    # SV file    
-    head_sv = None
-    row_sv = []
-    seen_sv = set()
-    sv_samples = set()
-    with open(sv_file, 'r') as sf:
-        for line in sf:
-            line = line.strip().split('\t')
-            if not head_sv and 'Sample_Id' in line:
-                head_sv = {val.upper(): idx for idx, val in enumerate(line)}
-            elif head_sv and len(line) == len(head_sv):
-                line_tuple = tuple(line)
-                if line_tuple not in seen_sv:
-                    seen_sv.add(line_tuple)
-                    row_sv.append(line)
-                    sv_samples.add(line[head_sv['SAMPLE_ID']])
+        logger.info(f"Processed {len(row_mut)} mutation records from {len(mut_samples)} samples")        # SV file    
+        logger.info("Processing structural variant data...")
+        head_sv = None
+        row_sv = []
+        seen_sv = set()
+        sv_samples = set()
+        
+        with open(sv_file, 'r', encoding='utf-8') as sf:
+            for line in sf:
+                line = line.strip().split('\t')
+                if not head_sv and 'Sample_Id' in line:
+                    head_sv = {val.upper(): idx for idx, val in enumerate(line)}
+                elif head_sv and len(line) == len(head_sv):
+                    line_tuple = tuple(line)
+                    if line_tuple not in seen_sv:
+                        seen_sv.add(line_tuple)
+                        row_sv.append(line)
+                        sv_samples.add(line[head_sv['SAMPLE_ID']])
 
-    # CNA file
-    head_cna = None
-    cna_values = {}
-    with open(cna_file, 'r') as cf:
-        for line in cf:
-            line = line.strip().split('\t')
-            if not head_cna and 'Hugo_Symbol' in line:
-                samples = line[1:]  # skip 'Hugo_Symbol' - samples
-                head_cna = {sample:idx for idx, sample in enumerate(samples)}
-            elif head_cna and len(line) == len(head_cna) + 1: 
-                cna_values[line[0]] = line[1:] # a gene and its entries
+        logger.info(f"Processed {len(row_sv)} SV records from {len(sv_samples)} samples")
 
-    # Unify samples across mut, sv, and clin using sample file mapping
-    mut_sv_union = list(mut_samples.union(sv_samples))  
-    # Sample_file 
-    patient_to_samples = {}
-    head_sample = None
-    row_sample = []
-    with open(sample_file, 'r') as sf:
-        for line in sf:
-            line = line.strip().split('\t')
-            if not head_sample and 'PATIENT_ID' in line:
-                # Create header indices
-                head_sample = {val.upper(): idx for idx, val in enumerate(line)}    
-            elif head_sample and len(line) == len(head_sample):
-                # Get patient and Sample IDs
-                patient_id = line[head_sample['PATIENT_ID']]
-                sample_id = line[head_sample['SAMPLE_ID']]
-                if patient_id in pat_list and sample_id in mut_sv_union:
-                    if patient_id not in patient_to_samples:
-                        patient_to_samples[patient_id] = []
-                    patient_to_samples[patient_id].append(sample_id)
-                    row_sample.append(line)
+        # CNA file
+        logger.info("Processing copy number alteration data...")
+        head_cna = None
+        cna_values = {}
+        
+        with open(cna_file, 'r', encoding='utf-8') as cf:
+            for line in cf:
+                line = line.strip().split('\t')
+                if not head_cna and 'Hugo_Symbol' in line:
+                    samples = line[1:]  # skip 'Hugo_Symbol' - samples
+                    head_cna = {sample: idx for idx, sample in enumerate(samples)}
+                elif head_cna and len(line) == len(head_cna) + 1: 
+                    cna_values[line[0]] = line[1:]  # gene and its entries
 
-    # Sort samples for each patient for consistency
-    for patient_id in patient_to_samples:
-        patient_to_samples[patient_id].sort()
+        logger.info(f"Processed CNA data for {len(cna_values)} genes across {len(head_cna)} samples")
 
-    # Create a new dictionary with sorted patient IDs
-    patient_to_samples = dict(sorted(patient_to_samples.items()))
+        # Unify samples across mut, sv, and clin using sample file mapping
+        mut_sv_union = list(mut_samples.union(sv_samples))  
+        logger.info(f"Found {len(mut_sv_union)} unique samples with mutation or SV data")
+        
+        # Sample file processing
+        logger.info("Processing sample metadata...")
+        patient_to_samples = {}
+        head_sample = None
+        row_sample = []
+        
+        with open(sample_file, 'r', encoding='utf-8') as sf:
+            for line in sf:
+                line = line.strip().split('\t')
+                if not head_sample and 'PATIENT_ID' in line:
+                    # Create header indices
+                    head_sample = {val.upper(): idx for idx, val in enumerate(line)}    
+                elif head_sample and len(line) == len(head_sample):
+                    # Get patient and Sample IDs
+                    patient_id = line[head_sample['PATIENT_ID']]
+                    sample_id = line[head_sample['SAMPLE_ID']]
+                    if patient_id in pat_list and sample_id in mut_sv_union:
+                        if patient_id not in patient_to_samples:
+                            patient_to_samples[patient_id] = []
+                        patient_to_samples[patient_id].append(sample_id)
+                        row_sample.append(line)
+
+        # Sort samples for each patient for consistency
+        for patient_id in patient_to_samples:
+            patient_to_samples[patient_id].sort()
+
+        # Create a new dictionary with sorted patient IDs
+        patient_to_samples = dict(sorted(patient_to_samples.items()))
+        
+        logger.info(f"Unified data: {len(patient_to_samples)} patients with {sum(len(samples) for samples in patient_to_samples.values())} samples")
 
         # Package data into a dictionary
-    data_unified = {
-        'clinical': {
-            'header': head_pat,
-            'rows': row_pat
-        },
-        'mutation': {
-            'header': head_mut,
-            'rows': row_mut
-        },
-        'sv': {
-            'header': head_sv,
-            'rows': row_sv
-        },
-        'cna': {
-            'header': head_cna,
-            'rows': cna_values
-        },
-        'sample': {
-            'patient_to_samples': patient_to_samples,
-            'rows': row_sample,
-            'header': head_sample
-        }}
-    
-    return data_unified
+        data_unified = {
+            'clinical': {
+                'header': head_pat,
+                'rows': row_pat
+            },
+            'mutation': {
+                'header': head_mut,
+                'rows': row_mut
+            },
+            'sv': {
+                'header': head_sv,
+                'rows': row_sv
+            },
+            'cna': {
+                'header': head_cna,
+                'rows': cna_values
+            },
+            'sample': {
+                'patient_to_samples': patient_to_samples,
+                'rows': row_sample,
+                'header': head_sample
+            }
+        }
+        
+        return data_unified
+        
+    except Exception as e:
+        logger.error(f"Error in file unification: {e}")
+        raise ValueError(f"Failed to unify files: {e}") from e
 
 def process_clin(clin_dict: Dict[str, Dict[str, List[str]]]):
 
@@ -291,20 +354,31 @@ def create_gene_list(clin_dict: Dict[str, Dict[str, List[str]]]) -> Dict[str, in
 
     return gene_index
 
-def calc_gene_muts(clin_dict: Dict[str, Dict[str, List[str]]]) -> None:
+def calc_gene_muts(clin_dict: Dict[str, Dict[str, List[str]]]) -> Dict[str, Union[int, float]]:
+    """
+    Calculate and visualize mutation and structural variant counts.
+    
+    Args:
+        clin_dict: Dictionary containing clinical and mutation data
+        
+    Returns:
+        Dictionary with mutation statistics
+    """
+    
+    logger.info("Calculating gene mutation statistics...")
     
     head_mut = clin_dict['mutation']['header']
     row_mut = clin_dict['mutation']['rows']
     head_sv = clin_dict['sv']['header']
     row_sv = clin_dict['sv']['rows']
      
-    # Count sample - gene occurences. Needed to determine maximum number of features/genes
+    # Count sample - gene occurrences. Needed to determine maximum number of features/genes
     mut_counts_dict = {}
     for row in row_mut:
         gene = row[head_mut['HUGO_SYMBOL']]
         sample = row[head_mut['TUMOR_SAMPLE_BARCODE']]
         # increment count for the (sample, gene) tuple
-        mut_counts_dict[(sample,gene)] = mut_counts_dict.get((sample, gene), 0) + 1 # get the number or 0 - then add 1
+        mut_counts_dict[(sample, gene)] = mut_counts_dict.get((sample, gene), 0) + 1
 
     sv_counts_dict = {}
     # Only count if columns have been found
@@ -312,46 +386,83 @@ def calc_gene_muts(clin_dict: Dict[str, Dict[str, List[str]]]) -> None:
         gene = row[head_sv['SITE1_HUGO_SYMBOL']]
         sample = row[head_sv['SAMPLE_ID']]
         # increment count for the (sample, gene) tuple
-        sv_counts_dict[(sample,gene)] = sv_counts_dict.get((sample, gene), 0) + 1
+        sv_counts_dict[(sample, gene)] = sv_counts_dict.get((sample, gene), 0) + 1
 
-     # Extract values from dictionaries
+    # Extract values from dictionaries
     mut_values = list(mut_counts_dict.values())
     sv_values = list(sv_counts_dict.values())
     
     # Safety check for empty data
+    if not mut_values and not sv_values:
+        logger.warning("No mutation or SV data found")
+        return {'max_mut': 0, 'max_sv': 0, 'mean_mut': 0, 'std_mut': 0}
+    
     max_mut = max(mut_values) if mut_values else 0
     max_sv = max(sv_values) if sv_values else 0
     combined_max = max(max_mut, max_sv) * 1.1  # Add 10% padding
 
-    mean = statistics.mean(mut_values)
-    std = statistics.stdev(mut_values)
+    # Calculate statistics
+    stats = {}
+    if mut_values:
+        mean_mut = statistics.mean(mut_values)
+        std_mut = statistics.stdev(mut_values) if len(mut_values) > 1 else 0
+        stats.update({
+            'mean_mut': mean_mut,
+            'std_mut': std_mut,
+            'max_mut': max_mut
+        })
+        
+        one_sd_range = (mean_mut - std_mut, mean_mut + std_mut)
+        two_sd_range = (mean_mut - 2*std_mut, mean_mut + 2*std_mut)
 
-    one_sd_range = (mean - std, mean + std)
-    two_sd_range = (mean - 2*std, mean + 2*std)
+        logger.info(f"Mutation stats - Mean: {mean_mut:.2f}, Std: {std_mut:.2f}")
+        logger.info(f"±1 SD: {one_sd_range}")
+        logger.info(f"±2 SD: {two_sd_range}")
+    
+    if sv_values:
+        stats.update({
+            'max_sv': max_sv,
+            'mean_sv': statistics.mean(sv_values),
+            'std_sv': statistics.stdev(sv_values) if len(sv_values) > 1 else 0
+        })
 
-    print(f"±1 SD: {one_sd_range}")
-    print(f"±2 SD: {two_sd_range}")
+    try:
+        # Create figures directory if it doesn't exist
+        figures_dir = os.path.join(os.getcwd(), 'figures')
+        os.makedirs(figures_dir, exist_ok=True)
 
-    # Create figure with 2 subplots
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
+        # Create figure with 2 subplots
+        fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
 
-    # Plot mutations
-    sns.kdeplot(mut_values, ax=axes[0], color='blue', fill=True)
-    axes[0].set_title('Density Plot of Mutation Counts')
-    axes[0].set_xlabel('Count')
-    axes[0].set_ylabel('Density')
-    axes[0].set_xlim(0, combined_max)
+        # Plot mutations
+        if mut_values:
+            sns.kdeplot(mut_values, ax=axes[0], color='blue', fill=True)
+            axes[0].set_title('Density Plot of Mutation Counts')
+            axes[0].set_xlabel('Count')
+            axes[0].set_ylabel('Density')
+            axes[0].set_xlim(0, combined_max)
 
-    # Plot structural variants
-    sns.kdeplot(sv_values, ax=axes[1], color='orange', fill=True)
-    axes[1].set_title('Density Plot of Structural Variant Counts')
-    axes[1].set_xlabel('Count')
-    axes[1].set_xlim(0, combined_max)
+        # Plot structural variants
+        if sv_values:
+            sns.kdeplot(sv_values, ax=axes[1], color='orange', fill=True)
+            axes[1].set_title('Density Plot of Structural Variant Counts')
+            axes[1].set_xlabel('Count')
+            axes[1].set_xlim(0, combined_max)
 
-    # Adjust layout and save
-    plt.tight_layout()
-    plt.savefig('/home/degan/msk/figures/density_separate_muts_sv.png', dpi=300, bbox_inches='tight')
-    plt.show()
+        # Adjust layout and save
+        plt.tight_layout()
+        
+        # Save with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        plot_path = os.path.join(figures_dir, f'density_separate_muts_sv_{timestamp}.png')
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        logger.info(f"Mutation density plot saved to: {plot_path}")
+        plt.close()  # Close figure to free memory
+        
+    except Exception as e:
+        logger.warning(f"Could not save mutation density plot: {e}")
+    
+    return stats
 
 def process_mutations(clin_dict: Dict[str, Dict[str, List[str]]], sample_index: Dict[str, int],
                       gene_index: Dict[str, int]):

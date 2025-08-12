@@ -12,13 +12,15 @@ import torch.nn.functional as F
 
 class GINLayer(nn.Module):
     
-    def __init__(self, feats_in, feats_out, max_tokens):
+    def __init__(self, feats_in, feats_out, max_tokens, dropout=0.2):
         """
         Initialize a GIN layer for message passing gene features with a graph structure.
 
         Args:
         feats_in (int): Number of input features per gene.
-        eats_out (int): Number of output features per gene after processing.
+        feats_out (int): Number of output features per gene after processing.
+        max_tokens (int): Maximum number of genes/nodes.
+        dropout (float): Dropout probability for regularization.
         """
  
         super(GINLayer, self).__init__()
@@ -29,7 +31,11 @@ class GINLayer(nn.Module):
             nn.Linear(feats_in, feats_out),
             nn.BatchNorm1d(feats_out),
             nn.ReLU(),
-            nn.Linear(feats_out, feats_out)
+            nn.Dropout(dropout),
+            nn.Linear(feats_out, feats_out),
+            nn.BatchNorm1d(feats_out),
+            nn.ReLU(),
+            nn.Dropout(dropout)
         )
  
         self.eps = nn.Parameter(torch.zeros(self.max_tokens)) # explore gene-specifc eps?
@@ -71,7 +77,7 @@ class GINLayer(nn.Module):
         return self.mlp(out.view(-1, out.shape[-1])).view(x.shape[0], x.shape[1], -1)
 
 class Net_omics(torch.nn.Module):
-    def __init__(self, features_omics, features_clin, dim, embedding_dim_string, max_tokens, output = 2):
+    def __init__(self, features_omics, features_clin, dim, embedding_dim_string, max_tokens, output=2, dropout=0.3):
         """
         Initialize the GNN model for integrating omics and clinical data.
         Args:
@@ -81,32 +87,92 @@ class Net_omics(torch.nn.Module):
            max_tokens (int): Number of genes (nodes) in the graph.
            embedding_dim_string: the dimension of each samples clinical information (tumor purity, cancer type etc)
            output (int, optional): Output features from omics branch. Defaults to 2.
+           dropout (float): Dropout probability for regularization.
         """
 
         super(Net_omics, self).__init__()
-        # previosuly defined GIN layer
-        self.gin1 = GINLayer(features_omics, dim, max_tokens)
-        self.gin2 = GINLayer(dim, dim, max_tokens)
-        self.gin3 = GINLayer(dim, 1, max_tokens)
-        self.linout = Linear(max_tokens, output, bias = False)
+        
+        # Input projection for omics data
+        self.input_proj = nn.Linear(features_omics, dim)
+        
+        # Enhanced GIN layers with dropout
+        self.gin1 = GINLayer(dim, dim, max_tokens, dropout)
+        self.gin2 = GINLayer(dim, dim, max_tokens, dropout)
+        self.gin3 = GINLayer(dim, dim, max_tokens, dropout)
+        
+        # Global pooling with attention
+        self.attention = nn.Sequential(
+            nn.Linear(dim, dim // 2),
+            nn.Tanh(),
+            nn.Linear(dim // 2, 1)
+        )
+        
+        # Omics branch with residual connection
+        self.omics_proj = nn.Sequential(
+            nn.Linear(dim, output),
+            nn.BatchNorm1d(output),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+        
+        # Enhanced clinical branch
+        self.clin_proj = nn.Sequential(
+            nn.Linear(features_clin + embedding_dim_string, dim // 2),
+            nn.BatchNorm1d(dim // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(dim // 2, output)
+        )
+        
+        # Final fusion layer
+        self.fusion = nn.Sequential(
+            nn.Linear(output * 2, output),
+            nn.BatchNorm1d(output),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(output, 1)
+        )
+        
         self.max_tokens = max_tokens
         self.features_omics = features_omics
-        self.tokens = torch.tensor(np.arange(0, max_tokens))
-        self.linclin = Linear(features_clin + embedding_dim_string, 1)
-        self.lin3 = Linear(output, 1)
-       
+        self.dropout = nn.Dropout(dropout)
     def forward(self, omics, adj, clin, sample_meta):
-        # get the weights for the connections through kd.
-        x = self.gin1(omics, adj)
+        # Input projection
+        x = self.input_proj(omics)
+        
+        # Store initial features for residual connection
+        x_residual = x
+        
+        # Graph convolutions with residual connections
+        x = self.gin1(x, adj)
+        x = x + x_residual  # Residual connection
+        
+        x_residual = x
         x = self.gin2(x, adj)
+        x = x + x_residual  # Residual connection
+        
         x = self.gin3(x, adj)
-        x = torch.flatten(x, 1)
-        x = self.linout(x)
-        # Clinical + categorical branch
-        combined_clin  = torch.cat([clin, sample_meta], dim = -1)
-        x2 = self.linclin(combined_clin)
-        x1 = self.lin3(x) + x2
-        return x1
+        
+        # Attention-based global pooling
+        # Compute attention weights for each gene
+        attention_weights = self.attention(x)  # [B, G, 1]
+        attention_weights = torch.softmax(attention_weights, dim=1)
+        
+        # Apply attention weights and sum
+        x_pooled = (x * attention_weights).sum(dim=1)  # [B, dim]
+        
+        # Omics branch
+        omics_out = self.omics_proj(x_pooled)
+        
+        # Clinical branch
+        combined_clin = torch.cat([clin, sample_meta], dim=-1)
+        clin_out = self.clin_proj(combined_clin)
+        
+        # Fusion of both branches
+        fused = torch.cat([omics_out, clin_out], dim=-1)
+        output = self.fusion(fused)
+        
+        return output
 
 class CoxBatchDataset(IterableDataset):
     """
