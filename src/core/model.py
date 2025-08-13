@@ -29,16 +29,16 @@ class GINLayer(nn.Module):
 
         self.mlp = nn.Sequential(
             nn.Linear(feats_in, feats_out),
-            nn.BatchNorm1d(feats_out),
+            nn.LayerNorm(feats_out),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(feats_out, feats_out),
-            nn.BatchNorm1d(feats_out),
+            nn.LayerNorm(feats_out),
             nn.ReLU(),
             nn.Dropout(dropout)
         )
  
-        self.eps = nn.Parameter(torch.zeros(self.max_tokens)) # explore gene-specifc eps?
+        self.eps = nn.Parameter(torch.tensor(0.0))  # scalar eps per layer for stability
 
     def forward(self, x, adj):
         """
@@ -53,8 +53,12 @@ class GINLayer(nn.Module):
         """
         B, G, F_in = x.shape
         
-        # Expand adjacency matrix to match batch dimension: [G, G] -> [B, G, G]
-        adj_expand = adj.expand(B, -1, -1)
+        # Normalize adjacency (row-normalized A -> D^{-1}A) for stable aggregation
+        deg = adj.sum(dim=1, keepdim=True).clamp_min(1.0)
+        adj_norm = adj / deg
+        
+        # Expand normalized adjacency matrix to match batch dimension: [G, G] -> [B, G, G]
+        adj_expand = adj_norm.expand(B, -1, -1)
 
         # Aggregate neighbor features via matrix multiplication: [B, G, G] @ [B, G, F] -> [B, G, F]
         agg = adj_expand @ x
@@ -63,10 +67,8 @@ class GINLayer(nn.Module):
             raise ValueError(f"Input number of genes ({G}) does not match "
                              f"layer's num_genes ({self.max_tokens})")
         
-        one_plus_eps_reshaped = (1 + self.eps).view(1, self.max_tokens, 1)
-        
         # Combine central node features with neighbors, scaled by (1 + eps)
-        out = one_plus_eps_reshaped * x + agg
+        out = (1 + self.eps) * x + agg
         
          # Check for numerical instability
         if torch.isnan(out).any() or torch.isinf(out).any():
@@ -136,6 +138,7 @@ class Net_omics(torch.nn.Module):
         self.max_tokens = max_tokens
         self.features_omics = features_omics
         self.dropout = nn.Dropout(dropout)
+        
     def forward(self, omics, adj, clin, sample_meta):
         # Input projection
         x = self.input_proj(omics)

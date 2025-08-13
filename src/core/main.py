@@ -16,12 +16,34 @@ from cox_loss import cox_loss_effron
 import os
 import re
 import pandas as pd
-import download_study as ds
+# Robust import for download_study from external locations
+try:
+    import download_study as ds
+except ImportError:
+    import sys as _sys
+    import os as _os
+    _here = _os.path.abspath(_os.path.dirname(__file__))
+    _candidates = [
+        _os.path.abspath(_os.path.join(_here, "..", "scripts")),
+        _os.path.abspath(_os.path.join(_here, "..")),
+        "/home/degan/Graph_Neural_Network_Mutation_Data/scripts",
+        "/home/degan/msk",
+    ]
+    for _p in _candidates:
+        if _os.path.isdir(_p) and _p not in _sys.path:
+            _sys.path.insert(0, _p)
+    try:
+        import download_study as ds
+    except ImportError as _e:
+        raise ImportError(
+            "Could not import download_study. Place download_study.py in scripts/ or add its directory to PYTHONPATH."
+        ) from _e
 from torch_geometric.data import Data, Batch
 import sys
 import model as m
 from tqdm import tqdm  # optional, for a nice progress bar
 import gc
+sys.path.insert(1, '/home/degan/Graph_Neural_Network_Mutation_Data/scripts/')
 
 # downlaod msk
 # msk_immuno_2019
@@ -432,17 +454,21 @@ if 'test_ci_best' in locals():
     results_df.attrs['test_ci_best'] = test_ci_best
     results_df.attrs['test_loss_best'] = test_loss_ci
 
-# Save to CSV with timestamp
+# Save to CSV with timestamp into results/training_outputs
 from datetime import datetime
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-csv_filename = f"training_results_{timestamp}.csv"
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+out_dir = os.path.join(project_root, "results", "training_outputs")
+os.makedirs(out_dir, exist_ok=True)
+
+csv_filename = os.path.join(out_dir, f"training_results_{timestamp}.csv")
 results_df.to_csv(csv_filename, index=False)
 
 print(f"Training results saved to: {csv_filename}")
 print(f"Columns: {list(results_df.columns)}")
 print(f"Total epochs trained: {actual_epochs}")
 
-# Also save a summary file with key metrics
+# Also save a summary file with key metrics into results/training_outputs
 summary_data = {
     'metric': ['best_val_ci', 'best_val_loss', 'final_test_ci', 'final_test_loss', 'total_epochs'],
     'value': [max(ci_val), min(loss_val), test_ci, test_loss, actual_epochs]
@@ -453,7 +479,7 @@ if 'test_ci_best' in locals():
     summary_data['value'].extend([test_ci_best, test_loss_ci])
 
 summary_df = pd.DataFrame(summary_data)
-summary_filename = f"training_summary_{timestamp}.csv"
+summary_filename = os.path.join(out_dir, f"training_summary_{timestamp}.csv")
 summary_df.to_csv(summary_filename, index=False)
 
 print(f"Training summary saved to: {summary_filename}")
