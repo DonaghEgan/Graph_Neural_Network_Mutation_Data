@@ -12,7 +12,7 @@ import torch.nn.functional as F
 
 class GINLayer(nn.Module):
     
-    def __init__(self, feats_in, feats_out, max_tokens, dropout=0.2):
+    def __init__(self, feats_in, feats_out, max_tokens, dropout=0.3):
         """
         Initialize a GIN layer for message passing gene features with a graph structure.
 
