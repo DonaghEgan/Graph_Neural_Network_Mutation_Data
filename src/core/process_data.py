@@ -290,9 +290,10 @@ def process_sample(clin_dict: Dict[str, Dict[str, List[str]]], sample_index : Di
 
     head_sample = clin_dict['sample']['header']
     row_sample = clin_dict['sample']['rows']
+
     # Load the Sentence-BERT model
     model = SentenceTransformer('paraphrase-MiniLM-L6-v2', device = 'cpu')
-    
+
     # Get the embedding dimension from the model.
     embedding_dim = model.get_sentence_embedding_dimension()
 
@@ -428,7 +429,7 @@ def calc_gene_muts(clin_dict: Dict[str, Dict[str, List[str]]]) -> Dict[str, Unio
 
     try:
         # Create figures directory if it doesn't exist
-        figures_dir = os.path.join(os.getcwd(), 'figures')
+        figures_dir = "/home/degan/Graph_Neural_Network_Mutation_Data/results/figures"
         os.makedirs(figures_dir, exist_ok=True)
 
         # Create figure with 2 subplots
@@ -451,10 +452,9 @@ def calc_gene_muts(clin_dict: Dict[str, Dict[str, List[str]]]) -> Dict[str, Unio
 
         # Adjust layout and save
         plt.tight_layout()
-        
-        # Save with timestamp
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        plot_path = os.path.join(figures_dir, f'density_separate_muts_sv_{timestamp}.png')
+
+        # Save without timestamp
+        plot_path = os.path.join(figures_dir, f'density_separate_muts_sv.png')
         plt.savefig(plot_path, dpi=300, bbox_inches='tight')
         logger.info(f"Mutation density plot saved to: {plot_path}")
         plt.close()  # Close figure to free memory

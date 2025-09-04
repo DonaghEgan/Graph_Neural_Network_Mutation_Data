@@ -1,0 +1,8 @@
+metric,value
+best_val_ci,0.6689777759214243
+best_val_loss,2.6514565539360047
+final_test_ci,0.5971058756113052
+final_test_loss,2.7672713299592337
+total_epochs,27.0
+test_ci_best_model,0.6339180668195089
+test_loss_best_model,2.703586141268412

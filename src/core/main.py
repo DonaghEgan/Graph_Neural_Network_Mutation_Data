@@ -3,41 +3,12 @@ import numpy as np
 import utility_functions as uf
 import random
 import read_specific as rs
-import torch
 import cox_loss as cl
-import torch.nn as nn
-from torch.utils.data import Dataset, IterableDataset
-from torch.utils.data import DataLoader
 import torch
-from torch_geometric.nn import GraphConv, global_add_pool
-from torch.nn import Linear
-from torch import optim
 from cox_loss import cox_loss_effron
 import os
-import re
 import pandas as pd
-# Robust import for download_study from external locations
-try:
-    import download_study as ds
-except ImportError:
-    import sys as _sys
-    import os as _os
-    _here = _os.path.abspath(_os.path.dirname(__file__))
-    _candidates = [
-        _os.path.abspath(_os.path.join(_here, "..", "scripts")),
-        _os.path.abspath(_os.path.join(_here, "..")),
-        "/home/degan/Graph_Neural_Network_Mutation_Data/scripts",
-        "/home/degan/msk",
-    ]
-    for _p in _candidates:
-        if _os.path.isdir(_p) and _p not in _sys.path:
-            _sys.path.insert(0, _p)
-    try:
-        import download_study as ds
-    except ImportError as _e:
-        raise ImportError(
-            "Could not import download_study. Place download_study.py in scripts/ or add its directory to PYTHONPATH."
-        ) from _e
+import download_study as ds
 from torch_geometric.data import Data, Batch
 import sys
 import model as m
@@ -207,7 +178,15 @@ else:
     device = torch.device('cpu')
     print("CUDA not available, using CPU")
 
-model = m.Net_omics(features_omics=omics_tensor.shape[2], features_clin=clin_tensor.shape[-1], dim=50, embedding_dim_string = sample_embeddings_tensor.shape[1], max_tokens=len(gene_index), output=2, dropout=0.3).to(device)
+model = m.Net_omics(
+    features_omics=omics_tensor.shape[2], 
+    features_clin=clin_tensor.shape[-1], 
+    dim=48,  # Changed from 50 to 48 (48 % 4 = 0)
+    embedding_dim_string=sample_embeddings_tensor.shape[1], 
+    max_tokens=len(gene_index), 
+    output=64,  # Changed from 2 to 64 for better performance
+    dropout=0.3
+).to(device)
 print(f"Using device: {device}")
 
 # Send model and adj matrix to device
@@ -232,48 +211,36 @@ def train_block(model, data, use_combined_loss=True, loss_schedule_epoch=0):
         batch = uf.move_batch_to_device(batch=batch, device=device)
         j += 1
 
-        # set the gradients in the optimizer to zero.
         optimizer.zero_grad()
-        
-        # run the model
         pred = model(batch.omics, adj_matrix, batch.clin, batch.sample_meta)
         
-        # Choose loss function based on training strategy
         if use_combined_loss and loss_schedule_epoch > 10:
-            # Use combined loss after initial warmup
             cox_loss = cl.combined_loss(batch.osurv, pred, cox_weight=0.8, ranking_weight=0.2)
         elif loss_schedule_epoch > 5:
-            # Use weighted Cox loss for class imbalance
             cox_loss = cl.weighted_cox_loss(batch.osurv, pred)
         else:
-            # Use standard enhanced Cox loss for initial epochs
             cox_loss = cl.cox_loss_effron(batch.osurv, pred)
         
-        # Adaptive L2 regularization - stronger early in training
         l2_strength = max(0.005, 0.02 * (1 - loss_schedule_epoch / 100))
         l2_reg = sum(torch.norm(p, p=2) for p in model.parameters() if p.requires_grad)
         total_loss = cox_loss + l2_strength * l2_reg
         
-        # Check for numerical issues
         if torch.isnan(total_loss) or torch.isinf(total_loss):
             print(f"⚠️ Invalid loss at batch {j}, skipping...")
             continue
         
         total_loss.backward()
-        
-        # Gradient clipping for stability
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         
-        # update the loss_all object (use Cox loss for monitoring)
-        loss_all += cox_loss.item()
-        
-        # update parameters in model.
+        # Convert to Python float immediately
+        loss_all += float(cox_loss.item())
         optimizer.step()
         
-        # calculate concordance index with improved function
-        c_index += cl.concordance_index(batch.osurv, pred)
+        # Ensure c_index calculation returns a float
+        ci_batch = cl.concordance_index(batch.osurv, pred)
+        c_index += float(ci_batch) if isinstance(ci_batch, torch.Tensor) else float(ci_batch)
 
-    return loss_all/j, c_index/j
+    return float(loss_all/j), float(c_index/j)
 
 # We will make a testing function too. 
 def evaluate_model(model, data):
@@ -298,10 +265,13 @@ def evaluate_model(model, data):
             num_batches += 1
             pred = model(batch.omics, adj_matrix, batch.clin, batch.sample_meta)
             loss = cl.cox_loss_effron(batch.osurv, pred)
-            loss_all += loss.item()
-            c_index += cl.concordance_index(batch.osurv, pred)
+            
+            # Convert to Python float immediately
+            loss_all += float(loss.item())
+            ci_batch = cl.concordance_index(batch.osurv, pred)
+            c_index += float(ci_batch) if isinstance(ci_batch, torch.Tensor) else float(ci_batch)
 
-    return loss_all / num_batches, c_index / num_batches
+    return float(loss_all / num_batches), float(c_index / num_batches)
 
 # get train and validation
 uf.log_memory('Create batch data') 
@@ -439,20 +409,20 @@ import pandas as pd
 actual_epochs = len(loss_train)
 epoch_numbers = list(range(actual_epochs))
 
+# Convert tensor values to Python floats/ints to ensure proper CSV format
 results_df = pd.DataFrame({
-    'epoch': epoch_numbers,
-    'train_loss': loss_train,
-    'val_loss': loss_val,
-    'train_ci': ci_train,
-    'val_ci': ci_val
+    'epoch': [int(x) for x in epoch_numbers],
+    'train_loss': [float(x) if isinstance(x, torch.Tensor) else float(x) for x in loss_train],
+    'val_loss': [float(x) if isinstance(x, torch.Tensor) else float(x) for x in loss_val],
+    'train_ci': [float(x) if isinstance(x, torch.Tensor) else float(x) for x in ci_train],
+    'val_ci': [float(x) if isinstance(x, torch.Tensor) else float(x) for x in ci_val]
 })
 
-# Add final test results as metadata
-results_df.attrs['test_ci'] = test_ci
-results_df.attrs['test_loss'] = test_loss
-if 'test_ci_best' in locals():
-    results_df.attrs['test_ci_best'] = test_ci_best
-    results_df.attrs['test_loss_best'] = test_loss_ci
+# Verify data types
+print("Data types in results DataFrame:")
+print(results_df.dtypes)
+print("\nFirst few rows:")
+print(results_df.head())
 
 # Save to CSV with timestamp into results/training_outputs
 from datetime import datetime
@@ -468,15 +438,21 @@ print(f"Training results saved to: {csv_filename}")
 print(f"Columns: {list(results_df.columns)}")
 print(f"Total epochs trained: {actual_epochs}")
 
-# Also save a summary file with key metrics into results/training_outputs
+# Also save a summary file with key metrics
 summary_data = {
     'metric': ['best_val_ci', 'best_val_loss', 'final_test_ci', 'final_test_loss', 'total_epochs'],
-    'value': [max(ci_val), min(loss_val), test_ci, test_loss, actual_epochs]
+    'value': [
+        float(max(ci_val)),
+        float(min(loss_val)), 
+        float(test_ci),
+        float(test_loss),
+        int(actual_epochs)
+    ]
 }
 
 if 'test_ci_best' in locals():
     summary_data['metric'].extend(['test_ci_best_model', 'test_loss_best_model'])
-    summary_data['value'].extend([test_ci_best, test_loss_ci])
+    summary_data['value'].extend([float(test_ci_best), float(test_loss_ci)])
 
 summary_df = pd.DataFrame(summary_data)
 summary_filename = os.path.join(out_dir, f"training_summary_{timestamp}.csv")

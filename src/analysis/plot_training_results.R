@@ -234,6 +234,23 @@ create_training_summary <- function(epoch_data, summary_data = NULL) {
   cat(rep("=", 60), "\n\n")
 }
 
+# Function to clean and convert data
+clean_data <- function(data) {
+  # Handle various data type issues
+  for (col in names(data)) {
+    if (col %in% c("epoch", "train_loss", "val_loss", "train_ci", "val_ci")) {
+      # Remove any non-numeric characters and convert
+      data[[col]] <- as.numeric(as.character(data[[col]]))
+      
+      # Replace any remaining NAs with 0 for plotting
+      if (col %in% c("train_ci", "val_ci")) {
+        data[[col]][is.na(data[[col]])] <- 0
+      }
+    }
+  }
+  return(data)
+}
+
 # Main execution
 cat("🚀 Enhanced GNN Training Results Analysis\n")
 cat("==========================================\n")
@@ -250,10 +267,17 @@ if (!is.null(files$epoch_file) && file.exists(files$epoch_file)) {
   cat("📖 Reading epoch-wise training data...\n")
   epoch_data <- read.csv(files$epoch_file, stringsAsFactors = FALSE)
   
-  cat("📋 Epoch Data Structure:\n")
+  # Clean the data
+  epoch_data <- clean_data(epoch_data)
+  
+  cat("📋 Epoch Data Structure (after cleaning):\n")
   print(str(epoch_data))
   cat("First few rows:\n")
   print(head(epoch_data))
+  
+  # Check for any remaining issues
+  cat("Data summary:\n")
+  print(summary(epoch_data))
 }
 
 # Read summary data if available
@@ -272,15 +296,15 @@ if (!is.null(epoch_data) && nrow(epoch_data) > 0) {
   
   # Save loss plot
   if (!is.null(plots$loss_plot)) {
-    ggsave("figures/loss_over_epochs.pdf", plots$loss_plot, width = 12, height = 8, dpi = 300)
-    ggsave("figures/loss_over_epochs.png", plots$loss_plot, width = 12, height = 8, dpi = 300)
+    ggsave("results/figures/loss_over_epochs.pdf", plots$loss_plot, width = 12, height = 8, dpi = 300)
+    ggsave("results/figures/loss_over_epochs.png", plots$loss_plot, width = 12, height = 8, dpi = 300)
     cat("✅ Loss plots saved\n")
   }
   
   # Save C-index plot if it exists
   if (!is.null(plots$cindex_plot)) {
-    ggsave("figures/cindex_over_epochs.pdf", plots$cindex_plot, width = 12, height = 8, dpi = 300)
-    ggsave("figures/cindex_over_epochs.png", plots$cindex_plot, width = 12, height = 8, dpi = 300)
+    ggsave("results/figures/cindex_over_epochs.pdf", plots$cindex_plot, width = 12, height = 8, dpi = 300)
+    ggsave("results/figures/cindex_over_epochs.png", plots$cindex_plot, width = 12, height = 8, dpi = 300)
     cat("✅ C-Index plots saved\n")
   }
   
