@@ -1,8 +1,0 @@
-"Metric","Value"
-"Best Validation C-Index","NA"
-"Best Validation Loss","2.6069"
-"Final Test C-Index","NA"
-"Final Test Loss","2.6893"
-"Total Training Epochs","78"
-"Test C-Index (Best Model)","NA"
-"Test Loss (Best Model)","2.6977"
